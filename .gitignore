@@ -1,0 +1,21 @@
+.env
+*.env
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Django
+media/
+staticfiles/
+
+# Env
+.env
+venv/
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

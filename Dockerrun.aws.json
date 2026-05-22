@@ -1,0 +1,10 @@
+{
+    "AWSEBDockerrunVersion": "1",
+    "Image": {
+        "Name":"danylokol/dormwatch-server:__TAG__",
+        "Update":"true"
+    },
+    "Ports": [
+        {"ContainerPort": "80"}
+    ]
+}
