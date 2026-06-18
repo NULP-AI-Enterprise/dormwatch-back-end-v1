@@ -10,31 +10,31 @@ COMPLAINT_STATUS = [
 ]
 
 
+class Role(models.Model):
+    role_id = models.AutoField(primary_key=True)
+    role_name = models.CharField(max_length=255)
+
+    class Meta:
+        db_table = 'role'
+
+
 class DormitoryBuilding(models.Model):
     building_id = models.AutoField(primary_key=True)
-    number = models.CharField(max_length=10)
+    name = models.CharField(max_length=255)
     address = models.TextField()
 
     class Meta:
         db_table = 'dormitory_building'
 
 
-class DormitoryFloor(models.Model):
-    floor_id = models.AutoField(primary_key=True)
+class Place(models.Model):
+    place_id = models.AutoField(primary_key=True)
+    place_name = models.CharField(max_length=255)
     building = models.ForeignKey(DormitoryBuilding, on_delete=models.CASCADE)
-    floor_number = models.IntegerField()
 
     class Meta:
-        db_table = 'dormitory_floor'
+        db_table = 'place'
 
-
-class DormitoryRoom(models.Model):
-    room_id = models.AutoField(primary_key=True)
-    floor = models.ForeignKey(DormitoryFloor, on_delete=models.CASCADE)
-    room_number = models.CharField(max_length=10)
-
-    class Meta:
-        db_table = 'dormitory_room'
 
 class UserProfile(models.Model):
     user = models.OneToOneField(
@@ -46,10 +46,12 @@ class UserProfile(models.Model):
     first_name = models.CharField(max_length=50, blank=True)
     last_name = models.CharField(max_length=50, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    is_admin = models.BooleanField(default=False)
-    room = models.ForeignKey(DormitoryRoom, on_delete=models.CASCADE)
     email = models.CharField(max_length=255)
     photo_url = models.ImageField(upload_to='user_photos/', blank=True, null=True)
+    login = models.CharField(max_length=255, blank=True, null=True)
+    password = models.CharField(max_length=255, blank=True, null=True)
+    role = models.ForeignKey(Role, on_delete=models.CASCADE, null=True, blank=True)
+    place = models.ForeignKey(Place, on_delete=models.CASCADE, null=True, blank=True)
     
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
@@ -70,14 +72,14 @@ class ComplaintCategory(models.Model):
 class Complaint(models.Model):
     complaint_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(UserProfile, on_delete=models.CASCADE)
-    room = models.ForeignKey(DormitoryRoom, on_delete=models.CASCADE, null=True, blank=True, related_name='complaints')
+    place = models.ForeignKey(Place, on_delete=models.CASCADE, null=True, blank=True, related_name='complaints')
     title = models.CharField(max_length=200)
     description = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    category = models.ForeignKey(ComplaintCategory, on_delete=models.CASCADE)
     status = models.CharField(max_length=50, choices=COMPLAINT_STATUS, default='pending')
     photo_url = models.ImageField(upload_to='complaint_photos/', blank=True, null=True)
-    counter = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    category = models.ForeignKey(ComplaintCategory, on_delete=models.CASCADE)
+    priority = models.CharField(max_length=50, blank=True, null=True)
     
 
     def __str__(self):
@@ -85,6 +87,16 @@ class Complaint(models.Model):
     
     class Meta:
         db_table = 'complaint'
+
+
+class Ticket(models.Model):
+    ticket_id = models.AutoField(primary_key=True)
+    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE)
+    complaint = models.ForeignKey(Complaint, on_delete=models.CASCADE)
+    deadline = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'ticket'
 
 
 class Comment(models.Model):

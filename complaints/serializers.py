@@ -1,35 +1,34 @@
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, DormitoryFloor, DormitoryRoom, ComplaintCategory
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket
 
 
 
 class DormitoryBuildingSerializer(serializers.ModelSerializer):
     class Meta:
         model = DormitoryBuilding
-        fields = ("number", "address")
+        fields = ("building_id", "name", "address")
 
 
-class DormitoryFloorSerializer(serializers.ModelSerializer):
+class PlaceSerializer(serializers.ModelSerializer):
     building = DormitoryBuildingSerializer()
 
     class Meta:
-        model = DormitoryFloor
-        fields = ("floor_number", "building")
+        model = Place
+        fields = ("place_id", "place_name", "building")
 
 
-class DormitoryRoomSerializer(serializers.ModelSerializer):
-    floor = DormitoryFloorSerializer()
-
+class RoleSerializer(serializers.ModelSerializer):
     class Meta:
-        model = DormitoryRoom
-        fields = ("room_number", "floor")
+        model = Role
+        fields = ("role_id", "role_name")
 
 
 class UserSerializer(serializers.ModelSerializer):
-    room = DormitoryRoomSerializer(read_only=True)
+    place = PlaceSerializer(read_only=True)
+    role = RoleSerializer(read_only=True)
     class Meta:
         model = UserProfile
-        fields = ['user', 'first_name', 'last_name', 'email', 'room', 'photo_url', 'is_admin']
+        fields = ['user', 'first_name', 'last_name', 'email', 'place', 'photo_url', 'role']
 
 
 class UpdateUserSerializer(serializers.ModelSerializer):
@@ -38,10 +37,8 @@ class UpdateUserSerializer(serializers.ModelSerializer):
         fields = ['first_name', 'last_name', 'email', 'photo_url']
 
 
-class UpdateUserRoomSerializer(serializers.Serializer):
-    building_number = serializers.CharField()
-    floor_number = serializers.IntegerField()
-    room_number = serializers.CharField()
+class UpdateUserPlaceSerializer(serializers.Serializer):
+    place_id = serializers.IntegerField()
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -57,22 +54,24 @@ class UserComplaintSerializer(serializers.ModelSerializer):
 
 class ComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
-    room = DormitoryRoomSerializer(read_only=True)
+    place = PlaceSerializer(read_only=True)
     user = UserComplaintSerializer(read_only=True)
     class Meta:
         model = Complaint
-        fields = ['complaint_id', 'user', 'title', 'description', 'category', 'status', 'photo_url', 'created_at', 'counter','room']
-        read_only_fields = ['counter', 'complaint_id', 'created_at', 'user', 'status']
+        fields = ['complaint_id', 'user', 'title', 'description', 'category', 'status', 'photo_url', 'created_at', 'place', 'priority']
+        read_only_fields = ['complaint_id', 'created_at', 'user', 'status']
 
 
+class TicketSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Ticket
+        fields = ['ticket_id', 'user', 'complaint', 'deadline']
 
 
-
-class UpdateAdminStatusSerializer(serializers.ModelSerializer):
+class UpdateUserRoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = ['is_admin']
-        read_only_fields = []
+        fields = ['role']
 
 
 class ComplaintStatusSerializer(serializers.ModelSerializer):
@@ -90,11 +89,3 @@ class CommentSerializer(serializers.ModelSerializer):
 
     def get_user_name(self, obj):
         return f"{obj.user.first_name} {obj.user.last_name}".strip()
-
-
-class ComplaintCountSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Complaint
-        fields = ['counter']
-        read_only_fields = ['counter']
-
