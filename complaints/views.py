@@ -3,8 +3,8 @@ from django.db.models import F
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser
 
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, ComplaintVote, Role
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, ComplaintVote, Role, Ticket
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
@@ -327,3 +327,69 @@ class ComplaintVoteView(APIView):
             return Response({'votes': votes_count}, status=status.HTTP_200_OK)
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+
+class TicketView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    def get(self,request):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        if not user_profile.role or user_profile.role.role_name.lower() not in ['admin', 'адміністратор']:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        tickets = Ticket.objects.all()
+        serializer = TicketSerializer(tickets, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    def post(self,request):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        if not user_profile.role or user_profile.role.role_name.lower() not in ['admin', 'адміністратор']:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        complaint_id = request.data.get('complaint')
+        worker_id = request.data.get('user')
+        target_complaint = None
+        target_worker = None
+
+        if complaint_id:
+            try:
+                target_complaint = Complaint.objects.get(complaint_id=complaint_id)
+            except Complaint.DoesNotExist:
+                return Response({'error': 'Complaint not found.'}, status=status.HTTP_404_NOT_FOUND)
+            except Exception as e:
+                return Response({'error': f'Cannot find the complaint: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            return Response(
+                {"error": "complaint_id is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if worker_id:
+            try:
+                target_worker=UserProfile.objects.get(user_id=worker_id)
+            except UserProfile.DoesNotExist:
+                return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
+            except Exception as e:
+                return Response({'error': f'Cannot find the worker: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data.copy()
+        serializer = TicketSerializer(data=data)
+        if serializer.is_valid():
+            serializer.save(complaint=target_complaint, user=target_worker)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class TicketDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    def get(self, request, ticket_id):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        if not user_profile.role or user_profile.role.role_name.lower() not in ['admin', 'адміністратор']:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            ticket = Ticket.objects.get(ticket_id=ticket_id)
+        except Ticket.DoesNotExist:
+            return Response({'error': 'Ticket not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = TicketSerializer(ticket)
+        return Response(serializer.data, status=status.HTTP_200_OK)
