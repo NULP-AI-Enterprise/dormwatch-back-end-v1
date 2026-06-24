@@ -1,6 +1,6 @@
 from django.contrib.auth import authenticate
-from django.contrib.auth.models import User
 from django.conf import settings
+from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -75,19 +75,20 @@ class RegisterView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        user = serializer.save()
+        with transaction.atomic():
+            user = serializer.save()
 
-        role = Role.objects.filter(role_name__iexact='student').first()
-        place = serializer.validated_data.get('place_id')
+            role = Role.objects.filter(role_name__iexact='student').first()
+            place = serializer.validated_data.get('place_id')
 
-        UserProfile.objects.create(
-            user=user,
-            first_name=serializer.validated_data.get('first_name', ''),
-            last_name=serializer.validated_data.get('last_name', ''),
-            email=user.email,
-            role=role,
-            place=place,
-        )
+            UserProfile.objects.create(
+                user=user,
+                first_name=serializer.validated_data.get('first_name', ''),
+                last_name=serializer.validated_data.get('last_name', ''),
+                email=user.email,
+                role=role,
+                place=place,
+            )
 
         tokens = _get_tokens_for_user(user)
         response = Response(

@@ -23,7 +23,7 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-ug19sjvlpozd&*m%^2*$v&w7*7z$-09kf(l8dpzf_&lt2!nh)y')
+SECRET_KEY = os.environ['SECRET_KEY']
 
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
 ]
 
 AUTHENTICATION_BACKENDS = [
@@ -86,8 +87,9 @@ TEMPLATES = [
 WSGI_APPLICATION = 'dormwatch.wsgi.application'
 
 CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
+    o.strip()
+    for o in os.environ.get('CORS_ALLOWED_ORIGINS', 'http://localhost:5173').split(',')
+    if o.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 
@@ -164,7 +166,7 @@ REST_FRAMEWORK = {
 
 ALLOWED_EMAIL_DOMAINS = [
     d.strip().lower()
-    for d in os.environ.get('ALLOWED_EMAIL_DOMAINS', 'lpnu.ua,example.invalid').split(',')
+    for d in os.environ.get('ALLOWED_EMAIL_DOMAINS', 'lpnu.ua').split(',')
     if d.strip()
 ]
 
@@ -174,7 +176,7 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
     'AUTH_COOKIE': 'refresh_token',
     'AUTH_COOKIE_SECURE': not DEBUG,
