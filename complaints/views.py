@@ -365,11 +365,11 @@ class TicketView(APIView):
         if worker_param:
             tickets = tickets.filter(user_id=worker_param)
         if priority_param:
-            tickets = tickets.filter(complaint_id__priority=priority_param)
+            tickets = tickets.filter(complaint__priority=priority_param)
         if date_from_param:
-            tickets = tickets.filter(deadline__gte=date_from)
+            tickets = tickets.filter(deadline__gte=date_from_param)
         if date_to_param:
-            tickets = tickets.filter(deadline__lte=date_to)
+            tickets = tickets.filter(deadline__lte=date_to_param)
         serializer = TicketSerializer(tickets, many=True)
 
         return Response(serializer.data, status=status.HTTP_200_OK)
