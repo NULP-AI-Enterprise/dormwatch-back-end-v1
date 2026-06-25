@@ -87,7 +87,7 @@ class RegisterView(APIView):
                 last_name=serializer.validated_data.get('last_name', ''),
                 email=user.email,
                 role=role,
-                place=place,
+                place_id=place,
             )
 
         tokens = _get_tokens_for_user(user)

@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.db.models import F
 from rest_framework import generics, permissions, viewsets
-from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, ComplaintVote, Role, Ticket
 from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer
@@ -81,11 +81,17 @@ class UserComplaintView(APIView):
         if not user_profile:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         place_id = request.data.get('place_id')
+        place_name = request.data.get('place_name')
         category_name = request.data.get('category')
         category_obj = None
         target_place = None
 
-        if place_id:
+        if place_name and user_profile.place and user_profile.place.building:
+            target_place, _ = Place.objects.get_or_create(
+                building=user_profile.place.building,
+                place_name=place_name
+            )
+        elif place_id:
             try:
                 target_place = Place.objects.get(place_id=place_id)
             except Place.DoesNotExist:
@@ -143,13 +149,19 @@ class UserComplaintDetailView(APIView):
         user_profile = UserProfile.objects.filter(user=request.user).first()
         if not user_profile:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+            
         try:
-            complaint = Complaint.objects.get(complaint_id=complaint_id, user=user_profile)
+            complaint = Complaint.objects.get(complaint_id=complaint_id)
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        is_admin = user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор']
+        
+        if complaint.user != user_profile and not is_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
         complaint.delete()
-        return Response({'status': 'Deleted succesfully'}, status=status.HTTP_204_NO_CONTENT)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class UpdateUserRoleView(APIView):
     permission_classes = [IsAdminUser]
@@ -215,7 +227,7 @@ class UserProfileView(APIView):
     def delete(self, request):
         user=request.user
         user.delete()
-        return Response({'status': 'Deleted successfully'},status=status.HTTP_204_NO_CONTENT)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class AdminComplaintStatusView(APIView):
     permission_classes = [IsAdminOrCustomAdmin]
@@ -308,7 +320,7 @@ class CommentDeleteView(APIView):
             return Response({'error': 'Permission denied'},status=status.HTTP_403_FORBIDDEN)
 
         comment.delete()
-        return Response({'status': 'Deleted successfully'},status=status.HTTP_204_NO_CONTENT)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ComplaintVoteView(APIView):
@@ -335,7 +347,7 @@ class ComplaintVoteView(APIView):
 
 class TicketView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     def get(self,request):
         user_profile = UserProfile.objects.filter(user=request.user).first()
         if not user_profile:
@@ -385,7 +397,7 @@ class TicketView(APIView):
 
 class TicketDetailView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     def get(self, request, ticket_id):
         user_profile = UserProfile.objects.filter(user=request.user).first()
         if not user_profile:
