@@ -24,6 +24,7 @@ urlpatterns = [
     path('complaints/<int:complaint_id>/vote/', views.ComplaintVoteView.as_view(), name='complaint-vote'),
     path('tickets/', views.TicketView.as_view(), name='tickets'),
     path('tickets/<int:ticket_id>/', views.TicketDetailView.as_view(), name='ticket-detail'),
+    path('admin/employees/', views.EmployeeListView.as_view(), name='admin-employees'),
 ]
 
 if settings.DEBUG:

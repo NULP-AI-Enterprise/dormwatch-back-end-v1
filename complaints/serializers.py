@@ -52,7 +52,7 @@ class CategorySerializer(serializers.ModelSerializer):
 class UserComplaintSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = ['first_name', 'last_name', 'photo_url']
+        fields = ['user', 'first_name', 'last_name', 'photo_url']
 
 class ComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
@@ -65,6 +65,7 @@ class ComplaintSerializer(serializers.ModelSerializer):
 
 
 class TicketSerializer(serializers.ModelSerializer):
+    user = UserComplaintSerializer(read_only=True)
     class Meta:
         model = Ticket
         fields = ['ticket_id', 'user', 'complaint', 'deadline']

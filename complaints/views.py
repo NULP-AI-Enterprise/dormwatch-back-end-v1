@@ -410,3 +410,48 @@ class TicketDetailView(APIView):
             return Response({'error': 'Ticket not found'}, status=status.HTTP_404_NOT_FOUND)
         serializer = TicketSerializer(ticket)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def patch(self, request, ticket_id):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile or not user_profile.role or user_profile.role.role_name.lower() not in ['admin', 'адміністратор']:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            ticket = Ticket.objects.get(ticket_id=ticket_id)
+        except Ticket.DoesNotExist:
+            return Response({'error': 'Ticket not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        worker_id = request.data.get('user')
+        if worker_id is not None:
+            if worker_id == "":
+                ticket.user = None
+            else:
+                try:
+                    target_worker = UserProfile.objects.get(user_id=worker_id)
+                    ticket.user = target_worker
+                except UserProfile.DoesNotExist:
+                    return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        deadline = request.data.get('deadline')
+        if deadline is not None:
+            if deadline == "":
+                ticket.deadline = None
+            else:
+                ticket.deadline = deadline
+            
+        ticket.save()
+        serializer = TicketSerializer(ticket)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class EmployeeListView(APIView):
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile or not user_profile.role or user_profile.role.role_name.lower() not in ['admin', 'адміністратор']:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+            
+        # Return all users who could be assigned as workers
+        employees = UserProfile.objects.all()
+        serializer = UserSerializer(employees, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
