@@ -326,28 +326,6 @@ class CommentDeleteView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class ComplaintVoteView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request, complaint_id):
-        user_profile = UserProfile.objects.filter(user=request.user).first()
-        if not user_profile:
-            return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
-       
-        try:
-            complaint = Complaint.objects.get(complaint_id=complaint_id)
-            if ComplaintVote.objects.filter(user=user_profile, complaint=complaint).exists():
-                return Response(
-                    {'error': 'You have already voted'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            ComplaintVote.objects.create(user=user_profile, complaint=complaint)
-            
-            votes_count = ComplaintVote.objects.filter(complaint=complaint).count()
-            return Response({'votes': votes_count}, status=status.HTTP_200_OK)
-        except Complaint.DoesNotExist:
-            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
-
 class TicketView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
