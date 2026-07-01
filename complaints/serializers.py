@@ -47,7 +47,7 @@ class UpdateUserPlaceSerializer(serializers.Serializer):
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ComplaintCategory
-        fields = ['name']
+        fields = ['category_id', 'name']
 
 
 class UserComplaintSerializer(serializers.ModelSerializer):
@@ -87,9 +87,11 @@ class UpdateUserRoleSerializer(serializers.ModelSerializer):
 
 
 class ComplaintStatusSerializer(serializers.ModelSerializer):
+    category_name = serializers.CharField(write_only=True, required=False)
+
     class Meta:
         model = Complaint
-        fields = ['status', 'priority']
+        fields = ['status', 'priority', 'title', 'description', 'category_name']
 
     
 class CommentSerializer(serializers.ModelSerializer):

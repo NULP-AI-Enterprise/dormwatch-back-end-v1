@@ -24,6 +24,8 @@ urlpatterns = [
     path('tickets/', views.TicketView.as_view(), name='tickets'),
     path('tickets/<int:ticket_id>/', views.TicketDetailView.as_view(), name='ticket-detail'),
     path('admin/employees/', views.EmployeeListView.as_view(), name='admin-employees'),
+    path('categories/', views.CategoryListView.as_view(), name='categories'),
+    path('admin/categories/', views.AdminCategoryCreateView.as_view(), name='admin-categories'),
 ]
 
 if settings.DEBUG:

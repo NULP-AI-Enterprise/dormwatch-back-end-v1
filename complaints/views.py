@@ -4,15 +4,39 @@ from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, CategorySerializer
+from .image_utils import process_complaint_photo
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from .permissions import IsCustomAdmin, IsAdminOrCustomAdmin, IsAdminUser
 from rest_framework import status
 
 
 # Create your views here.
+
+class CategoryListView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        categories = ComplaintCategory.objects.all()
+        serializer = CategorySerializer(categories, many=True)
+        return Response(serializer.data)
+
+
+class AdminCategoryCreateView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def post(self, request):
+        name = request.data.get('name', '').strip()
+        if not name:
+            return Response({'error': 'Name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        category, created = ComplaintCategory.objects.get_or_create(name=name)
+        if not created:
+            return Response({'error': 'Category with this name already exists'}, status=status.HTTP_409_CONFLICT)
+        serializer = CategorySerializer(category)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
 
 class ComplaintView(APIView):
     '''THIS VIEW IS FOR ADMIN AND OTHERS TO SEE'''
@@ -134,19 +158,40 @@ class UserComplaintDetailView(APIView):
         serializer = ComplaintSerializer(complaint)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    # def put(self, request, complaint_id):
-    #     user_profile = UserProfile.objects.filter(user=request.user).first()
-    #     if not user_profile:
-    #         return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-    #     try:
-    #         complaint = Complaint.objects.get(complaint_id=complaint_id, user=user_profile)
-    #     except Complaint.DoesNotExist:
-    #         return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
-    #     serializer = ComplaintSerializer(complaint, data=request.data)
-    #     if serializer.is_valid():
-    #         serializer.save()
-    #         return Response(serializer.data, status=status.HTTP_200_OK)
-    #     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    def patch(self, request, complaint_id):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            complaint = Complaint.objects.get(complaint_id=complaint_id, user=user_profile)
+        except Complaint.DoesNotExist:
+            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+        if complaint.status != 'pending':
+            return Response({'error': 'Can only edit pending complaints'}, status=status.HTTP_403_FORBIDDEN)
+
+        complaint.title = request.data.get('title', complaint.title)
+        complaint.description = request.data.get('description', complaint.description)
+        complaint.priority = request.data.get('priority', complaint.priority)
+
+        category_name = request.data.get('category_name')
+        if category_name:
+            try:
+                category_obj = ComplaintCategory.objects.get(name=category_name)
+            except ComplaintCategory.DoesNotExist:
+                return Response({'error': f'Category "{category_name}" not found'}, status=status.HTTP_400_BAD_REQUEST)
+            complaint.category = category_obj
+
+        photo_file = request.FILES.get('photo_url')
+        if photo_file:
+            if photo_file.size > 10 * 1024 * 1024:
+                return Response({'error': 'File size must be under 10MB'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+            result = process_complaint_photo(photo_file)
+            complaint.photo_url = result['full']
+            complaint.thumbnail = result['thumbnail']
+
+        complaint.save()
+        serializer = ComplaintSerializer(complaint)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, complaint_id):
         user_profile = UserProfile.objects.filter(user=request.user).first()
@@ -234,24 +279,46 @@ class UserProfileView(APIView):
 
 class AdminComplaintStatusView(APIView):
     permission_classes = [IsAdminOrCustomAdmin]
+    parser_classes = [MultiPartParser, FormParser]
 
     def patch(self, request, complaint_id):
         try:
             complaint = Complaint.objects.get(complaint_id=complaint_id)
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
-        
+
         serializer = ComplaintStatusSerializer(
             complaint,
-            data = request.data,
-            partial = True
+            data=request.data,
+            partial=True
         )
 
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status = status.HTTP_200_OK)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(serializer.errors, status = status.HTTP_400_BAD_REQUEST)    
+        for field in ['status', 'priority', 'title', 'description']:
+            if field in serializer.validated_data:
+                setattr(complaint, field, serializer.validated_data[field])
+
+        category_name = request.data.get('category_name')
+        if category_name:
+            try:
+                category_obj = ComplaintCategory.objects.get(name=category_name)
+            except ComplaintCategory.DoesNotExist:
+                return Response({'error': f'Category "{category_name}" not found'}, status=status.HTTP_400_BAD_REQUEST)
+            complaint.category = category_obj
+
+        photo_file = request.FILES.get('photo_url')
+        if photo_file:
+            if photo_file.size > 10 * 1024 * 1024:
+                return Response({'error': 'File size must be under 10MB'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+            result = process_complaint_photo(photo_file)
+            complaint.photo_url = result['full']
+            complaint.thumbnail = result['thumbnail']
+
+        complaint.save()
+        result_serializer = ComplaintSerializer(complaint)
+        return Response(result_serializer.data, status=status.HTTP_200_OK)    
 
 
 class CommentListView(APIView):
