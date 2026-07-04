@@ -3,8 +3,8 @@ from django.db.models import F
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
@@ -57,7 +57,7 @@ class ComplaintDetailView(APIView):
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
             
-        if not is_admin and complaint.status != 'published':
+        if not is_admin and complaint.status != 'published' and complaint.user != user_profile:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         serializer = ComplaintSerializer(complaint)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -89,11 +89,20 @@ class UserComplaintView(APIView):
         category_obj = None
         target_place = None
 
-        if place_name and user_profile.place and user_profile.place.building:
-            target_place, _ = Place.objects.get_or_create(
-                building=user_profile.place.building,
-                place_name=place_name
-            )
+        if place_name:
+            building = None
+            if user_profile.place and user_profile.place.building:
+                building = user_profile.place.building
+            else:
+                building = DormitoryBuilding.objects.first()
+            if building:
+                target_place, _ = Place.objects.get_or_create(
+                    building=building,
+                    place_name=place_name
+                )
+                if not user_profile.place:
+                    user_profile.place = target_place
+                    user_profile.save()
         elif place_id:
             try:
                 target_place = Place.objects.get(place_id=place_id)
@@ -115,7 +124,27 @@ class UserComplaintView(APIView):
         data = request.data.copy()
         serializer = ComplaintSerializer(data=data)
         if serializer.is_valid():
-            serializer.save(user=user_profile, place=target_place, category=category_obj)
+            complaint = serializer.save(user=user_profile, place=target_place, category=category_obj)
+            try:
+                admins = UserProfile.objects.filter(role__role_name__in=['admin', 'адміністратор'])
+                priority_labels = {
+                    'low': 'низьким',
+                    'medium': 'середнім',
+                    'high': 'високим',
+                    'critical': 'критичним'
+                }
+                priority_label = priority_labels.get(complaint.priority, complaint.priority)
+                title = f"Нова скарга: {complaint.title}"
+                message = f"З'явилася скарга з {priority_label} пріоритетом: {complaint.title}"
+                for admin in admins:
+                    Notification.objects.create(
+                        user=admin,
+                        title=title,
+                        message=message,
+                        complaint=complaint
+                    )
+            except Exception as e:
+                print("Error creating admin notification:", e)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -163,6 +192,19 @@ class UserComplaintDetailView(APIView):
         if complaint.user != user_profile and not is_admin:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
+        if is_admin and complaint.user != user_profile:
+            try:
+                title = f"Видалення скарги: {complaint.title}"
+                message = f"Адмін видалив твою скаргу: '{complaint.title}'"
+                Notification.objects.create(
+                    user=complaint.user,
+                    title=title,
+                    message=message,
+                    complaint=None
+                )
+            except Exception as e:
+                print("Error creating delete notification:", e)
+
         complaint.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -206,26 +248,26 @@ class UserProfileView(APIView):
         serializer = UserSerializer(user_profile)
         return Response(serializer.data, status=status.HTTP_200_OK)
     
-    # def patch(self, request):
-    #     try:
-    #         user_profile = (
-    #             UserProfile.objects
-    #             .select_related("place__building")
-    #             .get(user=request.user)
-    #         )
-    #     except UserProfile.DoesNotExist:
-    #         return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
-    #     except AttributeError:
-    #         return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
+    def patch(self, request):
+        try:
+            user_profile = (
+                UserProfile.objects
+                .select_related("place__building")
+                .get(user=request.user)
+            )
+        except UserProfile.DoesNotExist:
+            return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
+        except AttributeError:
+            return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
         
         
-    #     serializer = UpdateUserSerializer(user_profile, data=request.data, partial=True)
-    #     if serializer.is_valid():
-    #         serializer.save()
-    #         user_profile.refresh_from_db()
-    #         serializer = UserSerializer(user_profile)
-    #         return Response(serializer.data, status=status.HTTP_200_OK)
-    #     return Response(serializer.errors, status = status.HTTP_400_BAD_REQUEST)    
+        serializer = UpdateUserSerializer(user_profile, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            user_profile.refresh_from_db()
+            serializer = UserSerializer(user_profile)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status = status.HTTP_400_BAD_REQUEST)
     
     def delete(self, request):
         user=request.user
@@ -241,6 +283,7 @@ class AdminComplaintStatusView(APIView):
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
         
+        old_status = complaint.status
         serializer = ComplaintStatusSerializer(
             complaint,
             data = request.data,
@@ -248,7 +291,26 @@ class AdminComplaintStatusView(APIView):
         )
 
         if serializer.is_valid():
-            serializer.save()
+            updated_complaint = serializer.save()
+            if old_status != updated_complaint.status:
+                try:
+                    status_labels = {
+                        'pending': 'На розгляді',
+                        'published': 'Опубліковано',
+                        'denied': 'Відхилено',
+                        'resolved': 'Вирішено'
+                    }
+                    status_label = status_labels.get(updated_complaint.status, updated_complaint.status)
+                    title = f"Оновлення статусу: {updated_complaint.title}"
+                    message = f"Статус скарги змінено на: {status_label}"
+                    Notification.objects.create(
+                        user=updated_complaint.user,
+                        title=title,
+                        message=message,
+                        complaint=updated_complaint
+                    )
+                except Exception as e:
+                    print("Error creating status change notification:", e)
             return Response(serializer.data, status = status.HTTP_200_OK)
 
         return Response(serializer.errors, status = status.HTTP_400_BAD_REQUEST)    
@@ -453,3 +515,75 @@ class EmployeeListView(APIView):
         employees = UserProfile.objects.filter(role__role_name__iexact='worker')
         serializer = UserSerializer(employees, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class NotificationListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        notifications = Notification.objects.filter(user=user_profile).order_by('-created_at')[:50]
+        serializer = NotificationSerializer(notifications, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class NotificationMarkReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, notification_id):
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            notification = Notification.objects.get(notification_id=notification_id, user=user_profile)
+        except Notification.DoesNotExist:
+            return Response({'error': 'Notification not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        notification.is_read = True
+        notification.save()
+        serializer = NotificationSerializer(notification)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class NotificationMarkAllReadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        Notification.objects.filter(user=user_profile, is_read=False).update(is_read=True)
+        return Response({'status': 'all notifications marked as read'}, status=status.HTTP_200_OK)
+
+
+class ChangeUserRoomView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        building_id = request.data.get('building_number')
+        room_number = request.data.get('room_number')
+        
+        if not building_id or not room_number:
+            return Response({'error': 'building_number and room_number are required.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            building = DormitoryBuilding.objects.get(building_id=building_id)
+        except DormitoryBuilding.DoesNotExist:
+            return Response({'error': 'Building not found.'}, status=status.HTTP_404_NOT_FOUND)
+            
+        place, _ = Place.objects.get_or_create(
+            building=building,
+            place_name=room_number
+        )
+        
+        user_profile.place = place
+        user_profile.save()
+        
+        return Response({'detail': 'Room updated successfully'}, status=status.HTTP_200_OK)
+

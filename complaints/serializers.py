@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification
 from .image_utils import process_complaint_photo
 
 
@@ -139,3 +139,10 @@ class RegisterSerializer(serializers.Serializer):
             last_name=validated_data.get('last_name', ''),
         )
         return user
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ['notification_id', 'user', 'title', 'message', 'complaint', 'is_read', 'created_at']
+

@@ -21,9 +21,13 @@ urlpatterns = [
     path('admin/complaints/<int:complaint_id>/status/', views.AdminComplaintStatusView.as_view(), name = "complaint-status-change"),
     path('admin/users/<str:user_id>/set-role/', views.UpdateUserRoleView.as_view(), name='set-user-role'),
     path('profile/', views.UserProfileView.as_view(), name="user-profile"),
+    path('profile/change-room/', views.ChangeUserRoomView.as_view(), name='profile-change-room'),
     path('tickets/', views.TicketView.as_view(), name='tickets'),
     path('tickets/<int:ticket_id>/', views.TicketDetailView.as_view(), name='ticket-detail'),
     path('admin/employees/', views.EmployeeListView.as_view(), name='admin-employees'),
+    path('notifications/', views.NotificationListView.as_view(), name='notifications-list'),
+    path('notifications/<int:notification_id>/', views.NotificationMarkReadView.as_view(), name='notification-mark-read'),
+    path('notifications/mark-all-read/', views.NotificationMarkAllReadView.as_view(), name='notifications-mark-all-read'),
 ]
 
 if settings.DEBUG:
