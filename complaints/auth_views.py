@@ -2,7 +2,7 @@ from django.contrib.auth import authenticate
 from django.conf import settings
 from django.db import transaction
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -168,7 +168,12 @@ class BuildingListView(APIView):
 
 
 class PlaceListView(APIView):
-    permission_classes = [AllowAny]
+    # AllowAny for GET (register/report pickers), IsAuthenticated for POST
+    # (creating a room requires a logged-in user).
+    def get_permissions(self):
+        if self.request.method == 'POST':
+            return [IsAuthenticated()]
+        return [AllowAny()]
 
     def get(self, request):
         building_id = request.query_params.get('building_id')
@@ -182,3 +187,24 @@ class PlaceListView(APIView):
         ).order_by('place_name')
         serializer = PlaceSerializer(places, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        building_id = request.data.get('building_id')
+        place_name = (request.data.get('place_name') or '').strip()
+        if not building_id or not place_name:
+            return Response(
+                {'detail': 'building_id and place_name are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            building = DormitoryBuilding.objects.get(building_id=building_id)
+        except DormitoryBuilding.DoesNotExist:
+            return Response(
+                {'detail': 'Building not found'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        place, _ = Place.objects.get_or_create(
+            building=building, place_name=place_name
+        )
+        serializer = PlaceSerializer(place)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)

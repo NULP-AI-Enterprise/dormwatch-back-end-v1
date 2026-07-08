@@ -83,14 +83,14 @@ class ComplaintCategory(models.Model):
 class Complaint(models.Model):
     complaint_id = models.AutoField(primary_key=True)
     user = models.ForeignKey(UserProfile, on_delete=models.CASCADE)
-    place = models.ForeignKey(Place, on_delete=models.CASCADE, null=True, blank=True, related_name='complaints')
+    place = models.ForeignKey(Place, on_delete=models.SET_NULL, null=True, blank=True, related_name='complaints')
     title = models.CharField(max_length=200)
     description = models.TextField()
     status = models.CharField(max_length=50, choices=COMPLAINT_STATUS, default='pending')
     photo_url = models.ImageField(upload_to='complaint_photos/', blank=True, null=True)
     thumbnail = models.ImageField(upload_to='complaint_photos/thumbnails/', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    category = models.ForeignKey(ComplaintCategory, on_delete=models.CASCADE)
+    category = models.ForeignKey(ComplaintCategory, on_delete=models.SET_NULL, null=True, blank=True)
     priority = models.CharField(max_length=50, choices=COMPLAINT_PRIORITY, default='medium')
     
 

@@ -3,8 +3,9 @@ from django.db.models import F
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
+from django.db import IntegrityError
 from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer
 from .image_utils import process_complaint_photo
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -36,6 +37,105 @@ class AdminCategoryCreateView(APIView):
             return Response({'error': 'Category with this name already exists'}, status=status.HTTP_409_CONFLICT)
         serializer = CategorySerializer(category)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AdminCategoryDetailView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def patch(self, request, category_id):
+        try:
+            category = ComplaintCategory.objects.get(category_id=category_id)
+        except ComplaintCategory.DoesNotExist:
+            return Response({'error': 'Category not found'}, status=status.HTTP_404_NOT_FOUND)
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({'error': 'Name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if ComplaintCategory.objects.filter(name=name).exclude(category_id=category_id).exists():
+            return Response({'error': 'Category with this name already exists'}, status=status.HTTP_409_CONFLICT)
+        category.name = name
+        category.save()
+        return Response(CategorySerializer(category).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, category_id):
+        try:
+            category = ComplaintCategory.objects.get(category_id=category_id)
+        except ComplaintCategory.DoesNotExist:
+            return Response({'error': 'Category not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Non-destructive: category is SET_NULL, so complaints survive detached.
+        detached = Complaint.objects.filter(category=category).count()
+        category.delete()
+        return Response({'detached_complaints': detached}, status=status.HTTP_200_OK)
+
+
+class AdminBuildingCreateView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def post(self, request):
+        name = (request.data.get('name') or '').strip()
+        address = (request.data.get('address') or '').strip()
+        if not name or not address:
+            return Response({'error': 'Name and address are required'}, status=status.HTTP_400_BAD_REQUEST)
+        building = DormitoryBuilding.objects.create(name=name, address=address)
+        return Response(DormitoryBuildingSerializer(building).data, status=status.HTTP_201_CREATED)
+
+
+class AdminBuildingDetailView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def patch(self, request, building_id):
+        try:
+            building = DormitoryBuilding.objects.get(building_id=building_id)
+        except DormitoryBuilding.DoesNotExist:
+            return Response({'error': 'Building not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = DormitoryBuildingSerializer(building, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, building_id):
+        try:
+            building = DormitoryBuilding.objects.get(building_id=building_id)
+        except DormitoryBuilding.DoesNotExist:
+            return Response({'error': 'Building not found'}, status=status.HTTP_404_NOT_FOUND)
+        places_count = Place.objects.filter(building=building).count()
+        force = request.query_params.get('force') == 'true'
+        if places_count and not force:
+            return Response(
+                {'error': 'Building has rooms; remove them first', 'places_count': places_count},
+                status=status.HTTP_409_CONFLICT,
+            )
+        building.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AdminPlaceDetailView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def patch(self, request, place_id):
+        try:
+            place = Place.objects.get(place_id=place_id)
+        except Place.DoesNotExist:
+            return Response({'error': 'Place not found'}, status=status.HTTP_404_NOT_FOUND)
+        place_name = (request.data.get('place_name') or '').strip()
+        if not place_name:
+            return Response({'error': 'place_name is required'}, status=status.HTTP_400_BAD_REQUEST)
+        place.place_name = place_name
+        try:
+            place.save()
+        except IntegrityError:
+            return Response({'error': 'A room with this name already exists in the building'}, status=status.HTTP_409_CONFLICT)
+        return Response(PlaceSerializer(place).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, place_id):
+        try:
+            place = Place.objects.get(place_id=place_id)
+        except Place.DoesNotExist:
+            return Response({'error': 'Place not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Non-destructive: complaint.place is SET_NULL, so complaints survive detached.
+        detached = Complaint.objects.filter(place=place).count()
+        place.delete()
+        return Response({'detached_complaints': detached}, status=status.HTTP_200_OK)
 
 
 class ComplaintView(APIView):
