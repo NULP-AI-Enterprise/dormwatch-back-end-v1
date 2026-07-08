@@ -232,6 +232,9 @@ class UserComplaintDetailView(APIView):
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
             
+        if complaint.status in ['resolved', 'denied']:
+            return Response({'error': 'Cannot delete a resolved or denied complaint'}, status=status.HTTP_403_FORBIDDEN)
+            
         is_admin = user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор']
         
         if complaint.user != user_profile and not is_admin:
@@ -328,6 +331,9 @@ class AdminComplaintStatusView(APIView):
             complaint = Complaint.objects.get(complaint_id=complaint_id)
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        if complaint.status in ['resolved', 'denied']:
+            return Response({'error': 'Cannot edit a resolved or denied complaint'}, status=status.HTTP_403_FORBIDDEN)
         old_status = complaint.status
 
         serializer = ComplaintStatusSerializer(
@@ -510,6 +516,9 @@ class TicketView(APIView):
                 return Response({'error': 'Complaint not found.'}, status=status.HTTP_404_NOT_FOUND)
             except Exception as e:
                 return Response({'error': f'Cannot find the complaint: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+                
+            if target_complaint.status != 'published':
+                return Response({'error': 'Can only create tickets for published complaints'}, status=status.HTTP_400_BAD_REQUEST)
         else:
             return Response(
                 {"error": "complaint_id is required"},
