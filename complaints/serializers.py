@@ -9,7 +9,7 @@ from .image_utils import process_complaint_photo
 class DormitoryBuildingSerializer(serializers.ModelSerializer):
     class Meta:
         model = DormitoryBuilding
-        fields = ("building_id", "name", "address")
+        fields = ("building_id", "name", "address", "commandant_phone", "duty_master_phone")
 
 
 class PlaceSerializer(serializers.ModelSerializer):
