@@ -20,6 +20,16 @@ class PlaceSerializer(serializers.ModelSerializer):
         fields = ("place_id", "place_name", "building")
 
 
+class PlaceWriteSerializer(serializers.ModelSerializer):
+    building_id = serializers.PrimaryKeyRelatedField(
+        source='building', queryset=DormitoryBuilding.objects.all()
+    )
+
+    class Meta:
+        model = Place
+        fields = ("place_id", "place_name", "building_id")
+
+
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
         model = Role
