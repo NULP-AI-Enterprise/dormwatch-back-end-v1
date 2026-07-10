@@ -4,8 +4,8 @@ from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from django.db import IntegrityError
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer
 from .image_utils import process_complaint_photo
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -495,7 +495,39 @@ class AdminComplaintStatusView(APIView):
                 print("Error creating status change notification:", e)
 
         result_serializer = ComplaintSerializer(complaint)
-        return Response(result_serializer.data, status=status.HTTP_200_OK)    
+        return Response(result_serializer.data, status=status.HTTP_200_OK)
+
+
+class ResolveMyComplaintView(APIView):
+    '''The complaint owner marks their own request resolved once the work is
+    done. Scoped to the owner and to the published -> resolved transition only;
+    admins keep the broader status control via AdminComplaintStatusView.'''
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, complaint_id):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            complaint = Complaint.objects.get(complaint_id=complaint_id)
+        except Complaint.DoesNotExist:
+            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if complaint.user != user_profile:
+            return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+
+        if complaint.status != 'published':
+            return Response(
+                {'error': 'Only an active (published) complaint can be marked resolved'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        complaint.status = 'resolved'
+        complaint.save()
+
+        serializer = ComplaintSerializer(complaint)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class CommentListView(APIView):
@@ -597,7 +629,7 @@ class TicketView(APIView):
         worker_param = request.query_params.get('worker')
         priority_param = request.query_params.get('priority')
         if worker_param:
-            tickets = tickets.filter(user_id=worker_param)
+            tickets = tickets.filter(worker_id=worker_param)
         if priority_param:
             tickets = tickets.filter(complaint__priority=priority_param)
         if date_from_param:
@@ -614,7 +646,7 @@ class TicketView(APIView):
         if not user_profile.role or user_profile.role.role_name.lower() not in ['admin', 'адміністратор']:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         complaint_id = request.data.get('complaint')
-        worker_id = request.data.get('user')
+        worker_id = request.data.get('worker')
         target_complaint = None
         target_worker = None
 
@@ -625,7 +657,7 @@ class TicketView(APIView):
                 return Response({'error': 'Complaint not found.'}, status=status.HTTP_404_NOT_FOUND)
             except Exception as e:
                 return Response({'error': f'Cannot find the complaint: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
-                
+
             if target_complaint.status != 'published':
                 return Response({'error': 'Can only create tickets for published complaints'}, status=status.HTTP_400_BAD_REQUEST)
         else:
@@ -636,17 +668,15 @@ class TicketView(APIView):
 
         if worker_id:
             try:
-                target_worker=UserProfile.objects.get(user_id=worker_id)
-                if not target_worker.role or target_worker.role.role_name.lower() != 'worker':
-                    return Response({'error': 'User is not a worker'}, status=status.HTTP_400_BAD_REQUEST)
-            except UserProfile.DoesNotExist:
+                target_worker = Worker.objects.get(worker_id=worker_id)
+            except Worker.DoesNotExist:
                 return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
             except Exception as e:
                 return Response({'error': f'Cannot find the worker: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
         data = request.data.copy()
         serializer = TicketSerializer(data=data)
         if serializer.is_valid():
-            serializer.save(complaint=target_complaint, user=target_worker)
+            serializer.save(complaint=target_complaint, worker=target_worker)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -676,17 +706,14 @@ class TicketDetailView(APIView):
         except Ticket.DoesNotExist:
             return Response({'error': 'Ticket not found'}, status=status.HTTP_404_NOT_FOUND)
         
-        worker_id = request.data.get('user')
+        worker_id = request.data.get('worker')
         if worker_id is not None:
             if worker_id == "":
-                ticket.user = None
+                ticket.worker = None
             else:
                 try:
-                    target_worker = UserProfile.objects.get(user_id=worker_id)
-                    if not target_worker.role or target_worker.role.role_name.lower() != 'worker':
-                        return Response({'error': 'User is not a worker'}, status=status.HTTP_400_BAD_REQUEST)
-                    ticket.user = target_worker
-                except UserProfile.DoesNotExist:
+                    ticket.worker = Worker.objects.get(worker_id=worker_id)
+                except Worker.DoesNotExist:
                     return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
         
         deadline = request.data.get('deadline')
@@ -700,18 +727,46 @@ class TicketDetailView(APIView):
         serializer = TicketSerializer(ticket)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-class EmployeeListView(APIView):
-    permission_classes = [IsAuthenticated]
-    
+class WorkerListCreateView(APIView):
+    '''Admin-managed roster of external contractors. GET also serves the ticket
+    assignment dropdown.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
     def get(self, request):
-        user_profile = UserProfile.objects.filter(user=request.user).first()
-        if not user_profile or not user_profile.role or user_profile.role.role_name.lower() not in ['admin', 'адміністратор']:
-            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
-            
-        # Return all users who could be assigned as workers
-        employees = UserProfile.objects.filter(role__role_name__iexact='worker')
-        serializer = UserSerializer(employees, many=True)
+        workers = Worker.objects.all().order_by('full_name')
+        serializer = WorkerSerializer(workers, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = WorkerSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WorkerDetailView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def patch(self, request, worker_id):
+        try:
+            worker = Worker.objects.get(worker_id=worker_id)
+        except Worker.DoesNotExist:
+            return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = WorkerSerializer(worker, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, worker_id):
+        try:
+            worker = Worker.objects.get(worker_id=worker_id)
+        except Worker.DoesNotExist:
+            return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
+        # SET_NULL on Ticket.worker unassigns any tickets rather than deleting them.
+        worker.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class UserTicketView(APIView):
@@ -725,13 +780,13 @@ class UserTicketView(APIView):
             user_profile = request.user.profile
         except (UserProfile.DoesNotExist, AttributeError):
             return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
-        # select_related('user') avoids an N+1: TicketSerializer nests the
-        # assigned worker profile. order_by gives the client a deterministic
-        # order when a complaint has more than one ticket.
+        # select_related('worker') avoids an N+1: TicketSerializer nests the
+        # assigned worker. order_by gives the client a deterministic order when
+        # a complaint has more than one ticket.
         tickets = (
             Ticket.objects
             .filter(complaint__user=user_profile)
-            .select_related('user')
+            .select_related('worker')
             .order_by('ticket_id')
         )
         serializer = TicketSerializer(tickets, many=True)
