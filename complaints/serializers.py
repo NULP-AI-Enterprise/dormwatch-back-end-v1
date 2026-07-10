@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker
 from .image_utils import process_complaint_photo
 
 
@@ -84,11 +84,17 @@ class ComplaintSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class WorkerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Worker
+        fields = ['worker_id', 'full_name', 'company', 'phone']
+
+
 class TicketSerializer(serializers.ModelSerializer):
-    user = UserComplaintSerializer(read_only=True)
+    worker = WorkerSerializer(read_only=True)
     class Meta:
         model = Ticket
-        fields = ['ticket_id', 'user', 'complaint', 'deadline']
+        fields = ['ticket_id', 'worker', 'complaint', 'deadline']
 
 
 class UpdateUserRoleSerializer(serializers.ModelSerializer):

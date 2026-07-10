@@ -107,9 +107,27 @@ class Complaint(models.Model):
         db_table = 'complaint'
 
 
+class Worker(models.Model):
+    '''An external contractor who fixes reported issues. Workers never use the
+    app — they only receive a printed work-order. They are assignable to tickets
+    but have no login/account (unlike a UserProfile).'''
+    worker_id = models.AutoField(primary_key=True)
+    full_name = models.CharField(max_length=255)
+    company = models.CharField(max_length=255, blank=True)
+    phone = models.CharField(max_length=32, blank=True)
+
+    def __str__(self):
+        return self.full_name
+
+    class Meta:
+        db_table = 'worker'
+
+
 class Ticket(models.Model):
     ticket_id = models.AutoField(primary_key=True)
-    user = models.ForeignKey(UserProfile, on_delete=models.CASCADE, null=True, blank=True)
+    # Assigned contractor. SET_NULL so deleting a worker unassigns their tickets
+    # rather than deleting the work orders.
+    worker = models.ForeignKey(Worker, on_delete=models.SET_NULL, null=True, blank=True)
     complaint = models.ForeignKey(Complaint, on_delete=models.CASCADE)
     deadline = models.DateTimeField(null=True, blank=True)
 
