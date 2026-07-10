@@ -65,7 +65,11 @@ class UserProfile(models.Model):
     password = models.CharField(max_length=255, blank=True, null=True)
     role = models.ForeignKey(Role, on_delete=models.CASCADE, null=True, blank=True)
     place = models.ForeignKey(Place, on_delete=models.CASCADE, null=True, blank=True)
-    
+    building = models.ForeignKey(
+        DormitoryBuilding, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='residents',
+    )
+
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
     

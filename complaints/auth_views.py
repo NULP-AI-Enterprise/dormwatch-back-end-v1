@@ -89,6 +89,18 @@ class RegisterView(APIView):
                 role, _ = Role.objects.get_or_create(role_name='student')
 
             place = serializer.validated_data.get('place_id')
+            building = serializer.validated_data.get('building_id')
+
+            # Building is a first-class profile field, independent of room, so a
+            # user can register with a building but no room yet. If a room was
+            # chosen without an explicit building, keep them consistent by
+            # deriving the building from the room.
+            if not building and place:
+                building = (
+                    Place.objects.filter(place_id=place)
+                    .values_list('building_id', flat=True)
+                    .first()
+                )
 
             UserProfile.objects.create(
                 user=user,
@@ -97,6 +109,7 @@ class RegisterView(APIView):
                 email=user.email,
                 role=role,
                 place_id=place,
+                building_id=building,
             )
 
         tokens = _get_tokens_for_user(user)

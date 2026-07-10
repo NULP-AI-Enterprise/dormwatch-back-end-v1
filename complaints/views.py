@@ -157,7 +157,9 @@ class ComplaintView(APIView):
         
         complaints = Complaint.objects.all()
         if not is_admin:
-            complaints = complaints.filter(status='published')
+            # Public board shows both live and completed issues: 'published'
+            # (active) and 'resolved' (fixed). 'pending'/'denied' stay hidden.
+            complaints = complaints.filter(status__in=['published', 'resolved'])
         category_param = request.query_params.get('category')
         status_param = request.query_params.get('status')
         corps_param = request.query_params.get('corps')
@@ -188,7 +190,7 @@ class ComplaintDetailView(APIView):
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
             
-        if not is_admin and complaint.status != 'published' and complaint.user != user_profile:
+        if not is_admin and complaint.status not in ['published', 'resolved'] and complaint.user != user_profile:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         serializer = ComplaintSerializer(complaint)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -709,6 +711,30 @@ class EmployeeListView(APIView):
         # Return all users who could be assigned as workers
         employees = UserProfile.objects.filter(role__role_name__iexact='worker')
         serializer = UserSerializer(employees, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class UserTicketView(APIView):
+    '''Read-only: the tickets (work orders) opened for THIS resident's own
+    complaints. Residents never assign/schedule — that stays admin-only in
+    TicketView — but they can see who is handling their request and by when.'''
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            user_profile = request.user.profile
+        except (UserProfile.DoesNotExist, AttributeError):
+            return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
+        # select_related('user') avoids an N+1: TicketSerializer nests the
+        # assigned worker profile. order_by gives the client a deterministic
+        # order when a complaint has more than one ticket.
+        tickets = (
+            Ticket.objects
+            .filter(complaint__user=user_profile)
+            .select_related('user')
+            .order_by('ticket_id')
+        )
+        serializer = TicketSerializer(tickets, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 

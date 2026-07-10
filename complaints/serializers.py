@@ -38,10 +38,11 @@ class RoleSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     place = PlaceSerializer(read_only=True)
+    building = DormitoryBuildingSerializer(read_only=True)
     role = RoleSerializer(read_only=True)
     class Meta:
         model = UserProfile
-        fields = ['user', 'first_name', 'last_name', 'email', 'place', 'photo_url', 'role']
+        fields = ['user', 'first_name', 'last_name', 'email', 'place', 'building', 'photo_url', 'role']
 
 
 class UpdateUserSerializer(serializers.ModelSerializer):
@@ -122,6 +123,7 @@ class RegisterSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=50, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=50, required=False, allow_blank=True)
     place_id = serializers.IntegerField(required=False, allow_null=True)
+    building_id = serializers.IntegerField(required=False, allow_null=True)
 
     def validate_email(self, value):
         email = value.strip().lower()
@@ -138,6 +140,13 @@ class RegisterSerializer(serializers.Serializer):
     def validate(self, data):
         if data.get('password') != data.get('confirm_password'):
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match'})
+        # Building is required once any building exists. On an empty DB (first
+        # user / admin bootstrap) there is nothing to pick, so it stays optional.
+        building_id = data.get('building_id')
+        if DormitoryBuilding.objects.exists() and not building_id:
+            raise serializers.ValidationError({'building_id': 'Building selection is required'})
+        if building_id and not DormitoryBuilding.objects.filter(building_id=building_id).exists():
+            raise serializers.ValidationError({'building_id': 'Building not found'})
         return data
 
     def create(self, validated_data):

@@ -16,6 +16,7 @@ urlpatterns = [
     path('complaints/<int:complaint_id>/', views.ComplaintDetailView.as_view(), name = 'user-complaint-detail'),
     path('me/complaints/', views.UserComplaintView.as_view(), name='user-complaint'),
     path('me/complaints/<int:complaint_id>/', views.UserComplaintDetailView.as_view(), name = 'user-complaint-detail'),
+    path('me/tickets/', views.UserTicketView.as_view(), name='user-tickets'),
     path('complaints/<int:complaint_id>/comments/', views.CommentListView.as_view(), name="comments"),
     path('comments/<int:comment_id>/', views.CommentDeleteView.as_view(), name="delete-comment"),
     path('admin/complaints/<int:complaint_id>/status/', views.AdminComplaintStatusView.as_view(), name = "complaint-status-change"),
