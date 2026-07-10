@@ -103,6 +103,29 @@ class UpdateUserRoleSerializer(serializers.ModelSerializer):
         fields = ['role']
 
 
+class AdminUpdateUserSerializer(serializers.ModelSerializer):
+    # Admin write surface for a resident's dorm assignment + role. All three are
+    # optional so a PATCH can touch any subset; nullable so a value can be
+    # cleared (e.g. unassign a room). `*_id` mirrors the PlaceWriteSerializer
+    # idiom above.
+    role_id = serializers.PrimaryKeyRelatedField(
+        source='role', queryset=Role.objects.all(),
+        required=False, allow_null=True,
+    )
+    building_id = serializers.PrimaryKeyRelatedField(
+        source='building', queryset=DormitoryBuilding.objects.all(),
+        required=False, allow_null=True,
+    )
+    place_id = serializers.PrimaryKeyRelatedField(
+        source='place', queryset=Place.objects.all(),
+        required=False, allow_null=True,
+    )
+
+    class Meta:
+        model = UserProfile
+        fields = ['role_id', 'building_id', 'place_id']
+
+
 class ComplaintStatusSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(write_only=True, required=False)
 

@@ -5,7 +5,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from django.db import IntegrityError
 from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer, AdminUpdateUserSerializer, RoleSerializer
 from .image_utils import process_complaint_photo
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -383,8 +383,60 @@ class UpdateUserRoleView(APIView):
             serializer.save()
             return Response(serializer.data, status = status.HTTP_200_OK)
 
-        return Response(serializer.errors, status = status.HTTP_400_BAD_REQUEST)        
-    
+        return Response(serializer.errors, status = status.HTTP_400_BAD_REQUEST)
+
+
+class RoleListView(APIView):
+    '''Assignable roles for the admin residents page (edit dialog + role filter).
+    Returns the full role table, not just roles currently in use.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        roles = Role.objects.all().order_by('role_name')
+        serializer = RoleSerializer(roles, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class AdminUserListView(APIView):
+    '''Admin residents roster. select_related avoids N+1 on the nested
+    building/place/role that UserSerializer renders.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        profiles = (
+            UserProfile.objects
+            .select_related('role', 'building', 'place__building')
+            .order_by('first_name', 'last_name')
+        )
+        serializer = UserSerializer(profiles, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class AdminUserDetailView(APIView):
+    '''Admin edit of a resident's dorm building / room / role.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def patch(self, request, user_id):
+        try:
+            user_profile = UserProfile.objects.get(user=user_id)
+        except UserProfile.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # No self-demotion: an admin may fix their own building/room, but not
+        # change their own role (would let the last admin lock everyone out).
+        if str(user_id) == str(request.user.id) and 'role_id' in request.data:
+            return Response(
+                {'error': 'Cannot change your own role'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = AdminUpdateUserSerializer(user_profile, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            user_profile.refresh_from_db()
+            return Response(UserSerializer(user_profile).data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 class UserProfileView(APIView):
     permission_classes=[IsAuthenticated]
