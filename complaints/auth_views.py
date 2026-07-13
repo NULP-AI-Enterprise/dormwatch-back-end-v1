@@ -268,5 +268,16 @@ class PlaceListView(APIView):
         place, _ = Place.objects.get_or_create(
             building=building, place_name=place_name
         )
+        # capacity / is_shared are optional; apply them when provided so the
+        # same endpoint can create a residence (capacity>0) or a shared room.
+        dirty = False
+        if 'capacity' in request.data:
+            place.capacity = request.data.get('capacity') or 0
+            dirty = True
+        if 'is_shared' in request.data:
+            place.is_shared = bool(request.data.get('is_shared'))
+            dirty = True
+        if dirty:
+            place.save()
         serializer = PlaceSerializer(place)
         return Response(serializer.data, status=status.HTTP_201_CREATED)

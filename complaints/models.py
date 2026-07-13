@@ -38,6 +38,12 @@ class Place(models.Model):
     place_id = models.AutoField(primary_key=True)
     place_name = models.CharField(max_length=255)
     building = models.ForeignKey(DormitoryBuilding, on_delete=models.CASCADE)
+    # 0 = not a residence (kitchen/common area). A positive value is the number
+    # of residents the room can hold.
+    capacity = models.PositiveIntegerField(default=0)
+    # A shared room (kitchen/laundry/common) is a complaint location only and is
+    # NEVER a resident's assigned residence.
+    is_shared = models.BooleanField(default=False)
 
     class Meta:
         db_table = 'place'

@@ -128,6 +128,11 @@ class AdminPlaceDetailView(APIView):
         if not place_name:
             return Response({'error': 'place_name is required'}, status=status.HTTP_400_BAD_REQUEST)
         place.place_name = place_name
+        # capacity / is_shared are optional on a PATCH; apply only when present.
+        if 'capacity' in request.data:
+            place.capacity = request.data.get('capacity') or 0
+        if 'is_shared' in request.data:
+            place.is_shared = bool(request.data.get('is_shared'))
         try:
             place.save()
         except IntegrityError:

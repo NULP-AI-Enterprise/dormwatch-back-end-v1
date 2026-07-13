@@ -14,10 +14,15 @@ class DormitoryBuildingSerializer(serializers.ModelSerializer):
 
 class PlaceSerializer(serializers.ModelSerializer):
     building = DormitoryBuildingSerializer()
+    # Live count of residents assigned to this room (UserProfile.place FK).
+    occupancy = serializers.SerializerMethodField()
 
     class Meta:
         model = Place
-        fields = ("place_id", "place_name", "building")
+        fields = ("place_id", "place_name", "building", "capacity", "is_shared", "occupancy")
+
+    def get_occupancy(self, obj):
+        return UserProfile.objects.filter(place=obj).count()
 
 
 class PlaceWriteSerializer(serializers.ModelSerializer):
@@ -27,7 +32,7 @@ class PlaceWriteSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Place
-        fields = ("place_id", "place_name", "building_id")
+        fields = ("place_id", "place_name", "building_id", "capacity", "is_shared")
 
 
 class RoleSerializer(serializers.ModelSerializer):
