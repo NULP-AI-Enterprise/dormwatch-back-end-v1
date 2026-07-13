@@ -17,42 +17,6 @@ spec:
       labels:
         app: dormwatch-backend-v1
     spec:
-      initContainers:
-        - name: migrate
-          image: ghcr.io/nulp-ai-enterprise/dormwatch-back-end-v1:sha-1a02016
-          command: ["python", "manage.py", "migrate", "--noinput"]
-          env:
-            - name: SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: dormwatch-backend-v1-secret
-                  key: SECRET_KEY
-            - name: DB_NAME
-              valueFrom:
-                secretKeyRef:
-                  name: dormwatch-backend-v1-secret
-                  key: DB_NAME
-            - name: DB_USER
-              valueFrom:
-                secretKeyRef:
-                  name: dormwatch-backend-v1-secret
-                  key: DB_USER
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: dormwatch-backend-v1-secret
-                  key: DB_PASSWORD
-            - name: DB_HOST
-              value: "localhost"
-            - name: DB_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: dormwatch-backend-v1-secret
-                  key: DB_PORT
-            - name: ALLOWED_HOSTS
-              value: "dormwatch-v1.thesis-i.com,127.0.0.1"
-            - name: DEBUG
-              value: "False"
       containers:
         - name: postgres
           image: postgres:16-alpine

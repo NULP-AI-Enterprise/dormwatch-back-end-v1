@@ -15,6 +15,9 @@ COPY . .
 # collectstatic needs SECRET_KEY at build time; use a throwaway value
 RUN SECRET_KEY=build-time-placeholder python manage.py collectstatic --noinput
 
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+
 RUN addgroup --system --gid 1001 appgroup && \
     adduser  --system --uid 1001 --ingroup appgroup appuser
 
@@ -25,4 +28,4 @@ ENV HOME=/tmp
 USER appuser
 
 EXPOSE 8000
-CMD ["gunicorn", "dormwatch.wsgi:application", "-w", "4", "--bind", "0.0.0.0:8000", "--worker-tmp-dir", "/dev/shm", "--access-logfile", "-"]
+CMD ["/start.sh"]
