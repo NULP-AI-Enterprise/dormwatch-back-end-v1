@@ -21,6 +21,7 @@ urlpatterns = [
     path('complaints/', views.ComplaintView.as_view(), name='complaint'),
     path('complaints/<int:complaint_id>/', views.ComplaintDetailView.as_view(), name = 'user-complaint-detail'),
     path('me/complaints/', views.UserComplaintView.as_view(), name='user-complaint'),
+    path('me/complaint-places/', views.MyComplaintPlacesView.as_view(), name='my-complaint-places'),
     path('me/complaints/<int:complaint_id>/', views.UserComplaintDetailView.as_view(), name = 'user-complaint-detail'),
     path('me/complaints/<int:complaint_id>/resolve/', views.ResolveMyComplaintView.as_view(), name='resolve-my-complaint'),
     path('me/tickets/', views.UserTicketView.as_view(), name='user-tickets'),

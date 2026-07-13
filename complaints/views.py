@@ -16,6 +16,35 @@ from rest_framework import status
 
 # Create your views here.
 
+def _allowed_complaint_places(user_profile):
+    '''The bounded set of places a resident may file a звернення against: their
+    own assigned room (UserProfile.place) plus every shared room
+    (kitchen/laundry/common) in their building. Shared rooms are complaint
+    locations only and are exempt from any capacity notion. Building is the
+    first-class profile field; fall back to the room's building for residents
+    whose building is only known via their place (mirrors the web app's own
+    `building ?? place.building` fallback). Returns Place objects, own room
+    first, then shared rooms by name, de-duplicated.'''
+    building = user_profile.building
+    if building is None and user_profile.place:
+        building = user_profile.place.building
+
+    places = []
+    seen = set()
+    if user_profile.place:
+        places.append(user_profile.place)
+        seen.add(user_profile.place.place_id)
+    if building:
+        shared = Place.objects.filter(
+            is_shared=True, building=building
+        ).order_by('place_name')
+        for p in shared:
+            if p.place_id not in seen:
+                places.append(p)
+                seen.add(p.place_id)
+    return places
+
+
 class CategoryListView(APIView):
     permission_classes = [AllowAny]
 
@@ -222,32 +251,29 @@ class UserComplaintView(APIView):
         if not user_profile:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         place_id = request.data.get('place_id')
-        place_name = request.data.get('place_name')
         category_name = request.data.get('category')
         category_obj = None
         target_place = None
 
-        if place_name:
-            building = None
-            if user_profile.place and user_profile.place.building:
-                building = user_profile.place.building
-            else:
-                building = DormitoryBuilding.objects.first()
-            if building:
-                target_place, _ = Place.objects.get_or_create(
-                    building=building,
-                    place_name=place_name
-                )
-                if not user_profile.place:
-                    user_profile.place = target_place
-                    user_profile.save()
-        elif place_id:
+        # A resident may only file against their OWN room or a shared room in
+        # their building — never an arbitrary room, and never a newly invented
+        # one (no implicit get_or_create). place_name (free-text create) is no
+        # longer accepted here.
+        if place_id:
+            allowed = {p.place_id for p in _allowed_complaint_places(user_profile)}
             try:
-                target_place = Place.objects.get(place_id=place_id)
-            except Place.DoesNotExist:
-                return Response({'error': 'Place not found.'}, status=status.HTTP_404_NOT_FOUND)
-            except Exception as e:
-                return Response({'error': f'Cannot find the place: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+                place_id_int = int(place_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {'place': 'Можна обрати лише власну або спільну кімнату'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if place_id_int not in allowed:
+                return Response(
+                    {'place': 'Можна обрати лише власну або спільну кімнату'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            target_place = Place.objects.get(place_id=place_id_int)
         elif user_profile.place:
             target_place = user_profile.place
 
@@ -285,6 +311,22 @@ class UserComplaintView(APIView):
                 print("Error creating admin notification:", e)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class MyComplaintPlacesView(APIView):
+    '''The bounded set of rooms the requesting resident may file a звернення
+    against: their own assigned room + all shared rooms in their building.
+    Feeds the constrained room selector on the create-report page so the client
+    can only offer allowed options (server still re-validates on POST).'''
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        places = _allowed_complaint_places(user_profile)
+        serializer = PlaceSerializer(places, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class UserComplaintDetailView(APIView):
     '''THIS VIEW IS FOR USER TO SEE ONE COMPLAINT AND ABILITY DELETE IT'''
