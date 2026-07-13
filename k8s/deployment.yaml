@@ -20,7 +20,7 @@ spec:
       containers:
         - name: dormwatch-backend-v1
           # CI automatically updates this tag after each push
-          image: ghcr.io/nulp-ai-enterprise/dormwatch-back-end-v1:sha-f0384fe
+          image: ghcr.io/nulp-ai-enterprise/dormwatch-back-end-v1:sha-422a62d
           imagePullPolicy: Always
           ports:
             - name: http
