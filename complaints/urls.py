@@ -1,11 +1,17 @@
 from django.urls import path
+from django.http import JsonResponse
 from . import views
 from . import auth_views
 from django.conf import settings
 from django.conf.urls.static import static
 
 
+def health(request):
+    return JsonResponse({"status": "ok"})
+
+
 urlpatterns = [
+    path('health/', health, name='health'),
     path('auth/login/', auth_views.LoginView.as_view(), name='auth-login'),
     path('auth/register/', auth_views.RegisterView.as_view(), name='auth-register'),
     path('auth/refresh/', auth_views.CookieTokenRefreshView.as_view(), name='auth-refresh'),

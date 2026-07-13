@@ -29,7 +29,11 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'False').lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ['dormwatch-env-server.eba-jqtpnsga.us-east-1.elasticbeanstalk.com', '127.0.0.1']
+ALLOWED_HOSTS = [
+    'dormwatch.thesis-i.com',
+    'dormwatch-env-server.eba-jqtpnsga.us-east-1.elasticbeanstalk.com',
+    '127.0.0.1',
+]
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'

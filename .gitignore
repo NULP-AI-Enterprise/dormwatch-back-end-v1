@@ -20,3 +20,6 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Kubernetes secrets (never commit plain secrets)
+k8s/secret.yaml

@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dormwatch-backend-v1
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/NULP-AI-Enterprise/dormwatch-back-end-v1.git
+    targetRevision: main
+    path: k8s/
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dormwatch-backend-v1
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    - group: bitnami.com
+      kind: SealedSecret
+      jsonPointers:
+        - /spec/encryptedData
