@@ -17,10 +17,12 @@ RUN SECRET_KEY=build-time-placeholder python manage.py collectstatic --noinput
 
 RUN addgroup --system --gid 1001 appgroup && \
     adduser  --system --uid 1001 --ingroup appgroup appuser
-USER appuser
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV HOME=/tmp
+
+USER appuser
 
 EXPOSE 8000
 CMD ["gunicorn", "dormwatch.wsgi:application", "-w", "4", "--bind", "0.0.0.0:8000", "--worker-tmp-dir", "/dev/shm"]
