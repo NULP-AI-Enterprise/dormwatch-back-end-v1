@@ -33,7 +33,7 @@ ALLOWED_HOSTS = [
     h.strip()
     for h in os.environ.get(
         'ALLOWED_HOSTS',
-        'dormwatch-backend.thesis-i.com,127.0.0.1'
+        'dormwatch-v1.thesis-i.com,127.0.0.1'
     ).split(',')
     if h.strip()
 ]
