@@ -136,13 +136,17 @@ class ComplaintStatusSerializer(serializers.ModelSerializer):
     
 class CommentSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
+    author_is_admin = serializers.SerializerMethodField()
     class Meta:
         model = Comment
-        fields = ['comment_id','complaint','user','user_name', 'description', 'created_at']
+        fields = ['comment_id','complaint','user','user_name', 'author_is_admin', 'description', 'created_at']
         read_only_fields = ("created_at", "user",'complaint')
 
     def get_user_name(self, obj):
         return f"{obj.user.first_name} {obj.user.last_name}".strip()
+
+    def get_author_is_admin(self, obj):
+        return bool(obj.user.role and obj.user.role.role_name.lower() in ['admin', 'адміністратор'])
 
 
 class RegisterSerializer(serializers.Serializer):
