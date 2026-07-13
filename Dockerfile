@@ -25,4 +25,4 @@ ENV HOME=/tmp
 USER appuser
 
 EXPOSE 8000
-CMD ["gunicorn", "dormwatch.wsgi:application", "-w", "4", "--bind", "0.0.0.0:8000", "--worker-tmp-dir", "/dev/shm"]
+CMD ["gunicorn", "dormwatch.wsgi:application", "-w", "4", "--bind", "0.0.0.0:8000", "--worker-tmp-dir", "/dev/shm", "--access-logfile", "-"]
