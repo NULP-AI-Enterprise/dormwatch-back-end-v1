@@ -17,7 +17,79 @@ spec:
       labels:
         app: dormwatch-backend-v1
     spec:
+      initContainers:
+        - name: migrate
+          image: ghcr.io/nulp-ai-enterprise/dormwatch-back-end-v1:sha-1a02016
+          command: ["python", "manage.py", "migrate", "--noinput"]
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: SECRET_KEY
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: DB_NAME
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: DB_PASSWORD
+            - name: DB_HOST
+              value: "localhost"
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: DB_PORT
+            - name: ALLOWED_HOSTS
+              value: "dormwatch-v1.thesis-i.com,127.0.0.1"
+            - name: DEBUG
+              value: "False"
       containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: DB_NAME
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dormwatch-backend-v1-secret
+                  key: DB_PASSWORD
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+
         - name: dormwatch-backend-v1
           # CI automatically updates this tag after each push
           image: ghcr.io/nulp-ai-enterprise/dormwatch-back-end-v1:sha-1a02016
@@ -47,10 +119,7 @@ spec:
                   name: dormwatch-backend-v1-secret
                   key: DB_PASSWORD
             - name: DB_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: dormwatch-backend-v1-secret
-                  key: DB_HOST
+              value: "localhost"
             - name: DB_PORT
               valueFrom:
                 secretKeyRef:
@@ -84,7 +153,7 @@ spec:
               httpHeaders:
                 - name: Host
                   value: dormwatch-v1.thesis-i.com
-            failureThreshold: 12
+            failureThreshold: 18
             periodSeconds: 10
           livenessProbe:
             httpGet:
@@ -106,5 +175,11 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: postgres-data
+
       imagePullSecrets:
         - name: ghcr-secret
