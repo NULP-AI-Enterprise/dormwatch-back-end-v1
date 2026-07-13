@@ -8,7 +8,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: dormwatch.thesis-i.com
+    - host: dormwatch-backend.thesis-i.com
       http:
         paths:
           - path: /

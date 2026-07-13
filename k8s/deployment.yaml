@@ -79,12 +79,18 @@ spec:
             httpGet:
               path: /api/health/
               port: 8000
+              httpHeaders:
+                - name: Host
+                  value: dormwatch-backend.thesis-i.com
             failureThreshold: 12
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /api/health/
               port: 8000
+              httpHeaders:
+                - name: Host
+                  value: dormwatch-backend.thesis-i.com
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 3
@@ -92,6 +98,9 @@ spec:
             httpGet:
               path: /api/health/
               port: 8000
+              httpHeaders:
+                - name: Host
+                  value: dormwatch-backend.thesis-i.com
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
