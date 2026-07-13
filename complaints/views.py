@@ -890,33 +890,3 @@ class NotificationMarkAllReadView(APIView):
         Notification.objects.filter(user=user_profile, is_read=False).update(is_read=True)
         return Response({'status': 'all notifications marked as read'}, status=status.HTTP_200_OK)
 
-
-class ChangeUserRoomView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request):
-        user_profile = UserProfile.objects.filter(user=request.user).first()
-        if not user_profile:
-            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        building_id = request.data.get('building_number')
-        room_number = request.data.get('room_number')
-        
-        if not building_id or not room_number:
-            return Response({'error': 'building_number and room_number are required.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        try:
-            building = DormitoryBuilding.objects.get(building_id=building_id)
-        except DormitoryBuilding.DoesNotExist:
-            return Response({'error': 'Building not found.'}, status=status.HTTP_404_NOT_FOUND)
-            
-        place, _ = Place.objects.get_or_create(
-            building=building,
-            place_name=room_number
-        )
-        
-        user_profile.place = place
-        user_profile.save()
-        
-        return Response({'detail': 'Room updated successfully'}, status=status.HTTP_200_OK)
-

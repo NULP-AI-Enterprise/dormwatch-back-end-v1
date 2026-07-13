@@ -5,6 +5,32 @@ from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, C
 from .image_utils import process_complaint_photo
 
 
+def _validate_assignable_place(place, exclude_profile_pk=None):
+    """Reject assigning a resident to a room that isn't a valid residence.
+
+    A place is unassignable if it is shared (kitchen/laundry/common — a complaint
+    location only) or is a private room already at/over capacity. `capacity == 0`
+    means "not configured as a residence", so it is never assignable — an admin
+    must set a real capacity first. `exclude_profile_pk` drops the profile being
+    edited from the occupancy count so re-saving a resident already in the room
+    (or just changing their role) does not falsely trip the block.
+
+    Raises serializers.ValidationError({'place_id': ...}) → HTTP 400.
+    """
+    if place is None:
+        return
+    if place.is_shared:
+        raise serializers.ValidationError(
+            {'place_id': 'Кімната є спільною і не може бути житловою'}
+        )
+    occupancy = UserProfile.objects.filter(place=place)
+    if exclude_profile_pk is not None:
+        occupancy = occupancy.exclude(pk=exclude_profile_pk)
+    if place.capacity == 0 or occupancy.count() >= place.capacity:
+        raise serializers.ValidationError(
+            {'place_id': 'Кімната переповнена або не є житловою'}
+        )
+
 
 class DormitoryBuildingSerializer(serializers.ModelSerializer):
     class Meta:
@@ -130,6 +156,18 @@ class AdminUpdateUserSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = ['role_id', 'building_id', 'place_id']
 
+    def validate(self, data):
+        # `place_id` has source='place', so a provided value arrives as `place`
+        # (a Place instance or None). Only enforce when a room is actually being
+        # set; clearing it (None) is always allowed. Exclude the profile being
+        # edited so re-saving a resident already in a full room stays valid.
+        if 'place' in data and data['place'] is not None:
+            _validate_assignable_place(
+                data['place'],
+                exclude_profile_pk=self.instance.pk if self.instance else None,
+            )
+        return data
+
 
 class ComplaintStatusSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(write_only=True, required=False)
@@ -185,6 +223,14 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError({'building_id': 'Building selection is required'})
         if building_id and not DormitoryBuilding.objects.filter(building_id=building_id).exists():
             raise serializers.ValidationError({'building_id': 'Building not found'})
+        # A new user has no existing profile, so occupancy is the raw count.
+        # Same rule as admin assignment: shared/full/capacity-0 rooms are rejected.
+        place_id = data.get('place_id')
+        if place_id:
+            place = Place.objects.filter(place_id=place_id).first()
+            if place is None:
+                raise serializers.ValidationError({'place_id': 'Room not found'})
+            _validate_assignable_place(place)
         return data
 
     def create(self, validated_data):

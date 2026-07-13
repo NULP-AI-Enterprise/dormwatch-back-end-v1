@@ -32,7 +32,6 @@ urlpatterns = [
     path('admin/users/', views.AdminUserListView.as_view(), name='admin-users'),
     path('admin/users/<str:user_id>/', views.AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('profile/', views.UserProfileView.as_view(), name="user-profile"),
-    path('profile/change-room/', views.ChangeUserRoomView.as_view(), name='profile-change-room'),
     path('tickets/', views.TicketView.as_view(), name='tickets'),
     path('tickets/<int:ticket_id>/', views.TicketDetailView.as_view(), name='ticket-detail'),
     path('admin/workers/', views.WorkerListCreateView.as_view(), name='admin-workers'),
