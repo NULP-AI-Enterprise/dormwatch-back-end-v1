@@ -66,6 +66,8 @@ spec:
                 secretKeyRef:
                   name: dormwatch-backend-v1-secret
                   key: CORS_ALLOWED_ORIGINS
+            - name: ALLOWED_HOSTS
+              value: "dormwatch-backend.thesis-i.com,127.0.0.1"
             - name: DEBUG
               value: "False"
           resources:
