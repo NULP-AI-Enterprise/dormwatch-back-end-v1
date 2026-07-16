@@ -38,6 +38,12 @@ class Place(models.Model):
     place_id = models.AutoField(primary_key=True)
     place_name = models.CharField(max_length=255)
     building = models.ForeignKey(DormitoryBuilding, on_delete=models.CASCADE)
+    # 0 = not a residence (kitchen/common area). A positive value is the number
+    # of residents the room can hold.
+    capacity = models.PositiveIntegerField(default=0)
+    # A shared room (kitchen/laundry/common) is a complaint location only and is
+    # NEVER a resident's assigned residence.
+    is_shared = models.BooleanField(default=False)
 
     class Meta:
         db_table = 'place'
@@ -96,6 +102,10 @@ class Complaint(models.Model):
     photo_url = models.ImageField(upload_to='complaint_photos/', blank=True, null=True)
     thumbnail = models.ImageField(upload_to='complaint_photos/thumbnails/', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Set when the complaint transitions INTO status 'resolved' (by admin or the
+    # owner); cleared to None if it is later moved back out of resolved. Powers
+    # an honest date-range filter for the completed-tickets report.
+    resolved_at = models.DateTimeField(null=True, blank=True)
     category = models.ForeignKey(ComplaintCategory, on_delete=models.SET_NULL, null=True, blank=True)
     priority = models.CharField(max_length=50, choices=COMPLAINT_PRIORITY, default='medium')
     

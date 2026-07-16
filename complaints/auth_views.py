@@ -1,14 +1,20 @@
+import logging
+
 from django.contrib.auth import authenticate
+from django.contrib.auth.models import User
 from django.conf import settings
 from django.db import transaction
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import UserProfile, DormitoryBuilding, Place, Role
 from .serializers import RegisterSerializer, DormitoryBuildingSerializer, PlaceSerializer
+
+logger = logging.getLogger(__name__)
 
 
 def _get_tokens_for_user(user):
@@ -132,37 +138,80 @@ class CookieTokenRefreshView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        # Parse + verify the incoming token. A TokenError here means the token
+        # is expired, malformed, or already blacklisted (rotation replay) —
+        # distinguish these for diagnosis but all end in a 401.
         try:
-            token = RefreshToken(refresh_token)
-            token['email'] = token.payload.get('email', '')
-
-            domain = (
-                token['email'].split('@')[-1].lower()
-                if '@' in token['email']
-                else ''
-            )
-            allowed = [d.strip().lower() for d in settings.ALLOWED_EMAIL_DOMAINS]
-            if domain not in allowed:
-                return Response(
-                    {'detail': 'Domain not authorized'},
-                    status=status.HTTP_401_UNAUTHORIZED,
-                )
-
-            response = Response(
-                {'access': str(token.access_token)},
-                status=status.HTTP_200_OK,
-            )
-            _set_refresh_cookie(response, str(token))
-            return response
-        except Exception:
+            old = RefreshToken(refresh_token)
+        except TokenError as exc:
+            # "Token is blacklisted" / "expired" / signature errors all surface
+            # here. Surface the cause so a replayed (already-rotated) token is
+            # distinguishable from a genuinely expired one in the logs.
+            detail = str(exc)
+            logger.info('Refresh rejected: %s', detail)
             return Response(
-                {'detail': 'Invalid or expired refresh token'},
+                {'detail': f'Invalid or expired refresh token: {detail}'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        email = old.payload.get('email', '')
+        domain = email.split('@')[-1].lower() if '@' in email else ''
+        allowed = [d.strip().lower() for d in settings.ALLOWED_EMAIL_DOMAINS]
+        if domain not in allowed:
+            return Response(
+                {'detail': 'Domain not authorized'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # Resolve the user from the verified token's user_id claim.
+        user_id = old.payload.get('user_id')
+        try:
+            user = User.objects.get(pk=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {'detail': 'User no longer exists'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # Rotate: blacklist the presented token's jti (BLACKLIST_AFTER_ROTATION)
+        # then mint a brand-new refresh token with a fresh jti. The new token
+        # must re-carry the email claim or EmailDomainJWTAuthentication rejects
+        # the access tokens it mints.
+        try:
+            old.blacklist()
+        except TokenError as exc:
+            # Race: token blacklisted between verify and here — treat as replay.
+            logger.info('Refresh rotation blacklist race: %s', exc)
+            return Response(
+                {'detail': 'Refresh token already used'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        new = RefreshToken.for_user(user)
+        new['email'] = user.email
+
+        response = Response(
+            {'access': str(new.access_token)},
+            status=status.HTTP_200_OK,
+        )
+        _set_refresh_cookie(response, str(new))
+        return response
+
 
 class LogoutView(APIView):
+    permission_classes = [AllowAny]
+
     def post(self, request):
+        # Blacklist the refresh token so the session is actually invalidated
+        # server-side, then clear the cookie. A missing/invalid token still
+        # results in a successful logout (nothing to invalidate).
+        refresh_token = request.COOKIES.get('refresh_token')
+        if refresh_token:
+            try:
+                RefreshToken(refresh_token).blacklist()
+            except TokenError as exc:
+                logger.info('Logout with unusable refresh token: %s', exc)
+
         response = Response(
             {'detail': 'Logged out'},
             status=status.HTTP_200_OK,
@@ -219,5 +268,16 @@ class PlaceListView(APIView):
         place, _ = Place.objects.get_or_create(
             building=building, place_name=place_name
         )
+        # capacity / is_shared are optional; apply them when provided so the
+        # same endpoint can create a residence (capacity>0) or a shared room.
+        dirty = False
+        if 'capacity' in request.data:
+            place.capacity = request.data.get('capacity') or 0
+            dirty = True
+        if 'is_shared' in request.data:
+            place.is_shared = bool(request.data.get('is_shared'))
+            dirty = True
+        if dirty:
+            place.save()
         serializer = PlaceSerializer(place)
         return Response(serializer.data, status=status.HTTP_201_CREATED)

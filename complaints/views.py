@@ -1,5 +1,6 @@
 from django.shortcuts import render
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
@@ -15,6 +16,35 @@ from rest_framework import status
 
 
 # Create your views here.
+
+def _allowed_complaint_places(user_profile):
+    '''The bounded set of places a resident may file a звернення against: their
+    own assigned room (UserProfile.place) plus every shared room
+    (kitchen/laundry/common) in their building. Shared rooms are complaint
+    locations only and are exempt from any capacity notion. Building is the
+    first-class profile field; fall back to the room's building for residents
+    whose building is only known via their place (mirrors the web app's own
+    `building ?? place.building` fallback). Returns Place objects, own room
+    first, then shared rooms by name, de-duplicated.'''
+    building = user_profile.building
+    if building is None and user_profile.place:
+        building = user_profile.place.building
+
+    places = []
+    seen = set()
+    if user_profile.place:
+        places.append(user_profile.place)
+        seen.add(user_profile.place.place_id)
+    if building:
+        shared = Place.objects.filter(
+            is_shared=True, building=building
+        ).order_by('place_name')
+        for p in shared:
+            if p.place_id not in seen:
+                places.append(p)
+                seen.add(p.place_id)
+    return places
+
 
 class CategoryListView(APIView):
     permission_classes = [AllowAny]
@@ -128,6 +158,11 @@ class AdminPlaceDetailView(APIView):
         if not place_name:
             return Response({'error': 'place_name is required'}, status=status.HTTP_400_BAD_REQUEST)
         place.place_name = place_name
+        # capacity / is_shared are optional on a PATCH; apply only when present.
+        if 'capacity' in request.data:
+            place.capacity = request.data.get('capacity') or 0
+        if 'is_shared' in request.data:
+            place.is_shared = bool(request.data.get('is_shared'))
         try:
             place.save()
         except IntegrityError:
@@ -217,32 +252,29 @@ class UserComplaintView(APIView):
         if not user_profile:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         place_id = request.data.get('place_id')
-        place_name = request.data.get('place_name')
         category_name = request.data.get('category')
         category_obj = None
         target_place = None
 
-        if place_name:
-            building = None
-            if user_profile.place and user_profile.place.building:
-                building = user_profile.place.building
-            else:
-                building = DormitoryBuilding.objects.first()
-            if building:
-                target_place, _ = Place.objects.get_or_create(
-                    building=building,
-                    place_name=place_name
-                )
-                if not user_profile.place:
-                    user_profile.place = target_place
-                    user_profile.save()
-        elif place_id:
+        # A resident may only file against their OWN room or a shared room in
+        # their building — never an arbitrary room, and never a newly invented
+        # one (no implicit get_or_create). place_name (free-text create) is no
+        # longer accepted here.
+        if place_id:
+            allowed = {p.place_id for p in _allowed_complaint_places(user_profile)}
             try:
-                target_place = Place.objects.get(place_id=place_id)
-            except Place.DoesNotExist:
-                return Response({'error': 'Place not found.'}, status=status.HTTP_404_NOT_FOUND)
-            except Exception as e:
-                return Response({'error': f'Cannot find the place: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+                place_id_int = int(place_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {'place': 'Можна обрати лише власну або спільну кімнату'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if place_id_int not in allowed:
+                return Response(
+                    {'place': 'Можна обрати лише власну або спільну кімнату'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            target_place = Place.objects.get(place_id=place_id_int)
         elif user_profile.place:
             target_place = user_profile.place
 
@@ -280,6 +312,22 @@ class UserComplaintView(APIView):
                 print("Error creating admin notification:", e)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class MyComplaintPlacesView(APIView):
+    '''The bounded set of rooms the requesting resident may file a звернення
+    against: their own assigned room + all shared rooms in their building.
+    Feeds the constrained room selector on the create-report page so the client
+    can only offer allowed options (server still re-validates on POST).'''
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        places = _allowed_complaint_places(user_profile)
+        serializer = PlaceSerializer(places, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class UserComplaintDetailView(APIView):
     '''THIS VIEW IS FOR USER TO SEE ONE COMPLAINT AND ABILITY DELETE IT'''
@@ -526,6 +574,14 @@ class AdminComplaintStatusView(APIView):
             complaint.photo_url = result['full']
             complaint.thumbnail = result['thumbnail']
 
+        # Keep resolved_at honest with the status transition: stamp it when the
+        # complaint enters 'resolved', clear it if it ever leaves (a re-open).
+        if old_status != complaint.status:
+            if complaint.status == 'resolved':
+                complaint.resolved_at = timezone.now()
+            elif old_status == 'resolved':
+                complaint.resolved_at = None
+
         complaint.save()
 
         if old_status != complaint.status:
@@ -576,6 +632,7 @@ class ResolveMyComplaintView(APIView):
             )
 
         complaint.status = 'resolved'
+        complaint.resolved_at = timezone.now()
         complaint.save()
 
         serializer = ComplaintSerializer(complaint)
@@ -845,6 +902,65 @@ class UserTicketView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+class CompletedReportView(APIView):
+    '''Admin report of completed work: resolved complaints that have at least one
+    Ticket, filtered by resolved_at within [date_from, date_to] (inclusive on
+    both bounds by calendar day). Mirrors the date-param idiom of TicketView.get,
+    but bounds on resolved_at__date so the whole date_to day is included. Returns
+    one row per complaint with everything a printable report needs: title,
+    resolved_at, building + room, category, and the assigned worker(s)/deadline(s)
+    across its tickets.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        date_from_param = request.query_params.get('date_from')
+        date_to_param = request.query_params.get('date_to')
+
+        # Only resolved complaints that actually have a ticket (work order).
+        complaints = (
+            Complaint.objects
+            .filter(status='resolved', ticket__isnull=False)
+            .select_related('category', 'place__building')
+            .distinct()
+        )
+        if date_from_param:
+            complaints = complaints.filter(resolved_at__date__gte=date_from_param)
+        if date_to_param:
+            complaints = complaints.filter(resolved_at__date__lte=date_to_param)
+        complaints = complaints.order_by('-resolved_at')
+
+        rows = []
+        for complaint in complaints:
+            tickets = (
+                Ticket.objects
+                .filter(complaint=complaint)
+                .select_related('worker')
+                .order_by('ticket_id')
+            )
+            place = complaint.place
+            rows.append({
+                'complaint_id': complaint.complaint_id,
+                'title': complaint.title,
+                'resolved_at': complaint.resolved_at,
+                'building': place.building.name if place and place.building else None,
+                'room': place.place_name if place else None,
+                'category': complaint.category.name if complaint.category else None,
+                'priority': complaint.priority,
+                'tickets': [
+                    {
+                        'ticket_id': t.ticket_id,
+                        'worker': t.worker.full_name if t.worker else None,
+                        'worker_company': t.worker.company if t.worker else None,
+                        'worker_phone': t.worker.phone if t.worker else None,
+                        'deadline': t.deadline,
+                    }
+                    for t in tickets
+                ],
+            })
+
+        return Response(rows, status=status.HTTP_200_OK)
+
+
 class NotificationListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -884,34 +1000,4 @@ class NotificationMarkAllReadView(APIView):
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         Notification.objects.filter(user=user_profile, is_read=False).update(is_read=True)
         return Response({'status': 'all notifications marked as read'}, status=status.HTTP_200_OK)
-
-
-class ChangeUserRoomView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def patch(self, request):
-        user_profile = UserProfile.objects.filter(user=request.user).first()
-        if not user_profile:
-            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        building_id = request.data.get('building_number')
-        room_number = request.data.get('room_number')
-        
-        if not building_id or not room_number:
-            return Response({'error': 'building_number and room_number are required.'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        try:
-            building = DormitoryBuilding.objects.get(building_id=building_id)
-        except DormitoryBuilding.DoesNotExist:
-            return Response({'error': 'Building not found.'}, status=status.HTTP_404_NOT_FOUND)
-            
-        place, _ = Place.objects.get_or_create(
-            building=building,
-            place_name=room_number
-        )
-        
-        user_profile.place = place
-        user_profile.save()
-        
-        return Response({'detail': 'Room updated successfully'}, status=status.HTTP_200_OK)
 
