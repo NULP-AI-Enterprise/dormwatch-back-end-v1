@@ -193,6 +193,7 @@ class ComplaintView(APIView):
             # Public board shows both live and completed issues: 'published'
             # (active) and 'resolved' (fixed). 'pending'/'denied' stay hidden.
             complaints = complaints.filter(status__in=['published', 'resolved'])
+            complaints = complaints.filter(place__building=user_profile.building)
         category_param = request.query_params.get('category')
         status_param = request.query_params.get('status')
         corps_param = request.query_params.get('corps')
