@@ -1,12 +1,13 @@
 from django.shortcuts import render
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from django.db import IntegrityError
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer, AdminUpdateUserSerializer, RoleSerializer
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker, Announcement
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer, AdminUpdateUserSerializer, RoleSerializer, AnnouncementSerializer
 from .image_utils import process_complaint_photo
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -1000,4 +1001,162 @@ class NotificationMarkAllReadView(APIView):
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         Notification.objects.filter(user=user_profile, is_read=False).update(is_read=True)
         return Response({'status': 'all notifications marked as read'}, status=status.HTTP_200_OK)
+
+
+def _sweep_expired_pins():
+    '''Clear is_pinned on any announcement whose expiry has passed. There is no
+    task scheduler in this project, so this "unpin on expiry" rule is enforced
+    lazily — called at the top of every announcement list endpoint.'''
+    Announcement.objects.filter(
+        expires_at__lt=timezone.localdate(), is_pinned=True
+    ).update(is_pinned=False)
+
+
+def _parse_expires_at(raw):
+    '''Parse an expires_at request value. Returns (date|None, error). A falsy
+    value (None / '' / false) clears the expiry; anything else must be an
+    ISO YYYY-MM-DD date.'''
+    if not raw:
+        return None, None
+    parsed = parse_date(raw) if isinstance(raw, str) else None
+    if parsed is None:
+        return None, 'Invalid expires_at (expected YYYY-MM-DD)'
+    return parsed, None
+
+
+class AdminAnnouncementView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        _sweep_expired_pins()
+        announcements = (Announcement.objects
+                         .select_related('building', 'created_by')
+                         .order_by('-is_pinned', '-created_at'))
+        serializer = AnnouncementSerializer(announcements, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        title = (request.data.get('title') or '').strip()
+        body = (request.data.get('body') or '').strip()
+        if not title or not body:
+            return Response({'error': 'Title and body are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        building = None
+        building_id = request.data.get('building')
+        if building_id:
+            try:
+                building = DormitoryBuilding.objects.get(building_id=building_id)
+            except DormitoryBuilding.DoesNotExist:
+                return Response({'error': 'Building not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        expires_at, err = _parse_expires_at(request.data.get('expires_at'))
+        if err:
+            return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
+
+        author = getattr(request.user, 'profile', None)
+        announcement = Announcement.objects.create(
+            title=title,
+            body=body,
+            building=building,
+            is_pinned=bool(request.data.get('is_pinned')),
+            expires_at=expires_at,
+            created_by=author,
+        )
+
+        # Fan out in-app Notification rows so the existing bell surfaces the post.
+        # Global → all residents; building-scoped → that building's residents.
+        # Use bulk_create (unlike the per-row complaint idiom) since this can hit
+        # every resident.
+        try:
+            residents = UserProfile.objects.exclude(role__role_name__in=['admin', 'адміністратор'])
+            if building is not None:
+                # A resident's building may be null yet known via their place's
+                # building (see _allowed_complaint_places) — union both sets.
+                ids = set(UserProfile.objects.filter(building=building).values_list('user_id', flat=True))
+                ids |= set(UserProfile.objects
+                           .filter(building__isnull=True, place__building=building)
+                           .values_list('user_id', flat=True))
+                residents = residents.filter(user_id__in=ids)
+            notif_title = f"Оголошення: {announcement.title}"
+            objs = [
+                Notification(user=r, title=notif_title, message=announcement.body, complaint=None)
+                for r in residents.iterator()
+            ]
+            Notification.objects.bulk_create(objs, batch_size=500)
+        except Exception as e:
+            print("Error creating announcement notifications:", e)
+
+        return Response(AnnouncementSerializer(announcement).data, status=status.HTTP_201_CREATED)
+
+
+class AdminAnnouncementDetailView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def patch(self, request, announcement_id):
+        try:
+            announcement = Announcement.objects.get(announcement_id=announcement_id)
+        except Announcement.DoesNotExist:
+            return Response({'error': 'Announcement not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if 'title' in request.data:
+            title = (request.data.get('title') or '').strip()
+            if not title:
+                return Response({'error': 'Title cannot be empty'}, status=status.HTTP_400_BAD_REQUEST)
+            announcement.title = title
+        if 'body' in request.data:
+            body = (request.data.get('body') or '').strip()
+            if not body:
+                return Response({'error': 'Body cannot be empty'}, status=status.HTTP_400_BAD_REQUEST)
+            announcement.body = body
+        if 'building' in request.data:
+            building_id = request.data.get('building')
+            if building_id:
+                try:
+                    announcement.building = DormitoryBuilding.objects.get(building_id=building_id)
+                except DormitoryBuilding.DoesNotExist:
+                    return Response({'error': 'Building not found'}, status=status.HTTP_404_NOT_FOUND)
+            else:
+                announcement.building = None
+        if 'is_pinned' in request.data:
+            announcement.is_pinned = bool(request.data.get('is_pinned'))
+        if 'expires_at' in request.data:
+            expires_at, err = _parse_expires_at(request.data.get('expires_at'))
+            if err:
+                return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
+            announcement.expires_at = expires_at
+
+        announcement.save()
+        # Editing does NOT re-fan-out notifications (avoids spamming residents on
+        # every tweak); only creation pushes.
+        return Response(AnnouncementSerializer(announcement).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, announcement_id):
+        try:
+            announcement = Announcement.objects.get(announcement_id=announcement_id)
+        except Announcement.DoesNotExist:
+            return Response({'error': 'Announcement not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Already-sent Notification rows are independent records and are retained.
+        announcement.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AnnouncementListView(APIView):
+    '''Resident feed + dashboard widget source: global + own-building notices.'''
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        _sweep_expired_pins()
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        building = user_profile.building or (user_profile.place.building if user_profile.place else None)
+        announcements = Announcement.objects.select_related('building', 'created_by')
+        if building is not None:
+            announcements = announcements.filter(Q(building__isnull=True) | Q(building=building))
+        else:
+            announcements = announcements.filter(building__isnull=True)
+        # Expired posts stay reachable (client de-emphasizes; widget filters them).
+        announcements = announcements.order_by('-is_pinned', '-created_at')
+        serializer = AnnouncementSerializer(announcements, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
