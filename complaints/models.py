@@ -102,6 +102,10 @@ class Complaint(models.Model):
     photo_url = models.ImageField(upload_to='complaint_photos/', blank=True, null=True)
     thumbnail = models.ImageField(upload_to='complaint_photos/thumbnails/', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Set when the complaint transitions INTO status 'resolved' (by admin or the
+    # owner); cleared to None if it is later moved back out of resolved. Powers
+    # an honest date-range filter for the completed-tickets report.
+    resolved_at = models.DateTimeField(null=True, blank=True)
     category = models.ForeignKey(ComplaintCategory, on_delete=models.SET_NULL, null=True, blank=True)
     priority = models.CharField(max_length=50, choices=COMPLAINT_PRIORITY, default='medium')
     

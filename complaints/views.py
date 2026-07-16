@@ -1,5 +1,6 @@
 from django.shortcuts import render
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
@@ -573,6 +574,14 @@ class AdminComplaintStatusView(APIView):
             complaint.photo_url = result['full']
             complaint.thumbnail = result['thumbnail']
 
+        # Keep resolved_at honest with the status transition: stamp it when the
+        # complaint enters 'resolved', clear it if it ever leaves (a re-open).
+        if old_status != complaint.status:
+            if complaint.status == 'resolved':
+                complaint.resolved_at = timezone.now()
+            elif old_status == 'resolved':
+                complaint.resolved_at = None
+
         complaint.save()
 
         if old_status != complaint.status:
@@ -623,6 +632,7 @@ class ResolveMyComplaintView(APIView):
             )
 
         complaint.status = 'resolved'
+        complaint.resolved_at = timezone.now()
         complaint.save()
 
         serializer = ComplaintSerializer(complaint)
@@ -890,6 +900,65 @@ class UserTicketView(APIView):
         )
         serializer = TicketSerializer(tickets, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class CompletedReportView(APIView):
+    '''Admin report of completed work: resolved complaints that have at least one
+    Ticket, filtered by resolved_at within [date_from, date_to] (inclusive on
+    both bounds by calendar day). Mirrors the date-param idiom of TicketView.get,
+    but bounds on resolved_at__date so the whole date_to day is included. Returns
+    one row per complaint with everything a printable report needs: title,
+    resolved_at, building + room, category, and the assigned worker(s)/deadline(s)
+    across its tickets.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        date_from_param = request.query_params.get('date_from')
+        date_to_param = request.query_params.get('date_to')
+
+        # Only resolved complaints that actually have a ticket (work order).
+        complaints = (
+            Complaint.objects
+            .filter(status='resolved', ticket__isnull=False)
+            .select_related('category', 'place__building')
+            .distinct()
+        )
+        if date_from_param:
+            complaints = complaints.filter(resolved_at__date__gte=date_from_param)
+        if date_to_param:
+            complaints = complaints.filter(resolved_at__date__lte=date_to_param)
+        complaints = complaints.order_by('-resolved_at')
+
+        rows = []
+        for complaint in complaints:
+            tickets = (
+                Ticket.objects
+                .filter(complaint=complaint)
+                .select_related('worker')
+                .order_by('ticket_id')
+            )
+            place = complaint.place
+            rows.append({
+                'complaint_id': complaint.complaint_id,
+                'title': complaint.title,
+                'resolved_at': complaint.resolved_at,
+                'building': place.building.name if place and place.building else None,
+                'room': place.place_name if place else None,
+                'category': complaint.category.name if complaint.category else None,
+                'priority': complaint.priority,
+                'tickets': [
+                    {
+                        'ticket_id': t.ticket_id,
+                        'worker': t.worker.full_name if t.worker else None,
+                        'worker_company': t.worker.company if t.worker else None,
+                        'worker_phone': t.worker.phone if t.worker else None,
+                        'deadline': t.deadline,
+                    }
+                    for t in tickets
+                ],
+            })
+
+        return Response(rows, status=status.HTTP_200_OK)
 
 
 class NotificationListView(APIView):
