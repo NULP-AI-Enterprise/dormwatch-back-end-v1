@@ -75,12 +75,14 @@ class UserProfile(models.Model):
         DormitoryBuilding, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='residents',
     )
+    is_email_verified = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
     
     class Meta:
         db_table = "user_profile"
+
 
 
 class ComplaintCategory(models.Model):
@@ -168,6 +170,29 @@ class Notification(models.Model):
     class Meta:
         db_table = 'notification'
         ordering = ['-created_at']
+
+
+class EmailVerificationCode(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_verification_codes')
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'email_verification_code'
+
+
+class PasswordResetCode(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_codes')
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'password_reset_code'
+
 
 
 
