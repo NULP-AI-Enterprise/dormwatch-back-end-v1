@@ -28,7 +28,6 @@ class DormitoryBuilding(models.Model):
     name = models.CharField(max_length=255)
     address = models.TextField()
     commandant_phone = models.CharField(max_length=32, blank=True)
-    duty_master_phone = models.CharField(max_length=32, blank=True)
 
     class Meta:
         db_table = 'dormitory_building'
