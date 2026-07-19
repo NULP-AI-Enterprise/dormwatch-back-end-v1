@@ -32,6 +32,7 @@ urlpatterns = [
     path('roles/', views.RoleListView.as_view(), name='roles'),
     path('admin/users/', views.AdminUserListView.as_view(), name='admin-users'),
     path('admin/users/<str:user_id>/', views.AdminUserDetailView.as_view(), name='admin-user-detail'),
+    path('admin/invites/', auth_views.InviteTokenCreateView.as_view(), name='admin-invites'),
     path('profile/', views.UserProfileView.as_view(), name="user-profile"),
     path('tickets/', views.TicketView.as_view(), name='tickets'),
     path('tickets/<int:ticket_id>/', views.TicketDetailView.as_view(), name='ticket-detail'),

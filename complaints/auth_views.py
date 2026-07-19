@@ -11,7 +11,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import UserProfile, DormitoryBuilding, Place, Role
+from .models import UserProfile, DormitoryBuilding, Place, Role, InviteToken
 from .serializers import RegisterSerializer, DormitoryBuildingSerializer, PlaceSerializer
 
 logger = logging.getLogger(__name__)
@@ -52,14 +52,6 @@ class LoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        domain = email.split('@')[-1] if '@' in email else ''
-        allowed = [d.strip().lower() for d in settings.ALLOWED_EMAIL_DOMAINS]
-        if domain not in allowed:
-            return Response(
-                {'detail': f'Email domain @{domain} is not authorized'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         user = authenticate(request, username=email, password=password)
         if user is None:
             return Response(
@@ -84,6 +76,15 @@ class RegisterView(APIView):
         with transaction.atomic():
             user = serializer.save()
 
+            invite_token = serializer.validated_data.get('invite_token')
+            invite = None
+            if invite_token:
+                try:
+                    invite = InviteToken.objects.get(token=invite_token, is_used=False)
+                except InviteToken.DoesNotExist:
+                    # Token was already validated in serializer, but just in case
+                    pass
+
             is_first_user = not UserProfile.objects.exists()
 
             if is_first_user:
@@ -91,11 +92,25 @@ class RegisterView(APIView):
                 user.is_staff = True
                 user.is_superuser = True
                 user.save()
+            elif invite:
+                role = invite.role
+                if role.role_name == 'admin':
+                    user.is_staff = True
+                    user.is_superuser = True
+                    user.save()
+                invite.is_used = True
+                invite.save()
             else:
                 role, _ = Role.objects.get_or_create(role_name='student')
 
             place = serializer.validated_data.get('place_id')
             building = serializer.validated_data.get('building_id')
+
+            if invite:
+                if invite.building_id:
+                    building = invite.building_id
+                if invite.place_id:
+                    place = invite.place_id
 
             # Building is a first-class profile field, independent of room, so a
             # user can register with a building but no room yet. If a room was
@@ -155,13 +170,6 @@ class CookieTokenRefreshView(APIView):
             )
 
         email = old.payload.get('email', '')
-        domain = email.split('@')[-1].lower() if '@' in email else ''
-        allowed = [d.strip().lower() for d in settings.ALLOWED_EMAIL_DOMAINS]
-        if domain not in allowed:
-            return Response(
-                {'detail': 'Domain not authorized'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
 
         # Resolve the user from the verified token's user_id claim.
         user_id = old.payload.get('user_id')
@@ -281,3 +289,31 @@ class PlaceListView(APIView):
             place.save()
         serializer = PlaceSerializer(place)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+class InviteTokenCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if getattr(request.user, 'is_staff', False) is not True:
+            return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+            
+        role_id = request.data.get('role_id')
+        building_id = request.data.get('building_id')
+        place_id = request.data.get('place_id')
+        
+        if not role_id:
+            return Response({'detail': 'role_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            role = Role.objects.get(role_id=role_id)
+        except Role.DoesNotExist:
+            return Response({'detail': 'Role not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        token = InviteToken.objects.create(
+            role=role,
+            building_id=building_id,
+            place_id=place_id,
+            created_by=request.user
+        )
+        
+        return Response({'invite_token': str(token.token)}, status=status.HTTP_201_CREATED)

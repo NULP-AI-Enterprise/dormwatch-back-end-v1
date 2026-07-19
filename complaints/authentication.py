@@ -12,9 +12,4 @@ class EmailDomainJWTAuthentication(JWTAuthentication):
         email = validated_token.get('email', '')
         if not email:
             raise AuthenticationFailed('Token missing email claim')
-        domain = email.split('@')[-1].lower() if '@' in email else ''
-        if domain not in settings.ALLOWED_EMAIL_DOMAINS:
-            raise AuthenticationFailed(
-                f'Email domain @{domain} is not authorized'
-            )
         return (user, validated_token)
