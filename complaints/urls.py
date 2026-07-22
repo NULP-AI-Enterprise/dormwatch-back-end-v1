@@ -51,6 +51,9 @@ urlpatterns = [
     path('notifications/', views.NotificationListView.as_view(), name='notifications-list'),
     path('notifications/<int:notification_id>/', views.NotificationMarkReadView.as_view(), name='notification-mark-read'),
     path('notifications/mark-all-read/', views.NotificationMarkAllReadView.as_view(), name='notifications-mark-all-read'),
+    path('admin/announcements/', views.AdminAnnouncementView.as_view(), name='admin-announcements'),
+    path('admin/announcements/<int:announcement_id>/', views.AdminAnnouncementDetailView.as_view(), name='admin-announcement-detail'),
+    path('announcements/', views.AnnouncementListView.as_view(), name='announcements-list'),
 ]
 
 if settings.DEBUG:

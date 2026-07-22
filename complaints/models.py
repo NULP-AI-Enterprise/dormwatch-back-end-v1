@@ -192,6 +192,34 @@ class PasswordResetCode(models.Model):
     class Meta:
         db_table = 'password_reset_code'
 
+        
+class Announcement(models.Model):
+    announcement_id = models.AutoField(primary_key=True)
+    title = models.CharField(max_length=255)
+    body = models.TextField()
+    # Nullable = GLOBAL (visible to every building). Set = scoped to one building.
+    building = models.ForeignKey(
+        DormitoryBuilding, on_delete=models.CASCADE,
+        null=True, blank=True, related_name='announcements',
+    )
+    is_pinned = models.BooleanField(default=False)
+    # Calendar day the notice stops being "active". Expired = expires_at < today.
+    # Expiry only marks/hides (dashboard widget drops it, resident page shows it
+    # archived) — it never deletes. Crossing this date also clears is_pinned via a
+    # lazy sweep at read time (there is no scheduler; see views._sweep_expired_pins).
+    expires_at = models.DateField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        UserProfile, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='authored_announcements',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.title
+
+    class Meta:
+        db_table = 'announcement'
+        ordering = ['-created_at']
 
 
 

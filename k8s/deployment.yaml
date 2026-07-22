@@ -56,7 +56,7 @@ spec:
 
         - name: dormwatch-backend-v1
           # CI automatically updates this tag after each push
-          image: ghcr.io/nulp-ai-enterprise/dormwatch-back-end-v1:sha-af7f336
+          image: ghcr.io/nulp-ai-enterprise/dormwatch-back-end-v1:sha-12fa38f
           imagePullPolicy: Always
           ports:
             - name: http
