@@ -35,7 +35,7 @@ def _validate_assignable_place(place, exclude_profile_pk=None):
 class DormitoryBuildingSerializer(serializers.ModelSerializer):
     class Meta:
         model = DormitoryBuilding
-        fields = ("building_id", "name", "address", "commandant_phone", "duty_master_phone")
+        fields = ("building_id", "name", "address", "commandant_phone")
 
 
 class PlaceSerializer(serializers.ModelSerializer):

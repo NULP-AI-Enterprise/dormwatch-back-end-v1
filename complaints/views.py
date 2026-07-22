@@ -107,12 +107,10 @@ class AdminBuildingCreateView(APIView):
         if not name or not address:
             return Response({'error': 'Name and address are required'}, status=status.HTTP_400_BAD_REQUEST)
         commandant_phone = (request.data.get('commandant_phone') or '').strip()
-        duty_master_phone = (request.data.get('duty_master_phone') or '').strip()
         building = DormitoryBuilding.objects.create(
             name=name,
             address=address,
             commandant_phone=commandant_phone,
-            duty_master_phone=duty_master_phone,
         )
         return Response(DormitoryBuildingSerializer(building).data, status=status.HTTP_201_CREATED)
 
