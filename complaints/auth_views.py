@@ -11,8 +11,10 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import UserProfile, DormitoryBuilding, Place, Role
+from django.utils import timezone
+from .models import UserProfile, DormitoryBuilding, Place, Role, EmailVerificationCode, PasswordResetCode
 from .serializers import RegisterSerializer, DormitoryBuildingSerializer, PlaceSerializer
+from .email_utils import send_verification_email, send_password_reset_email
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +69,22 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
+        # Check verification
+        profile = getattr(user, 'profile', None)
+        if not profile or not profile.is_email_verified:
+            try:
+                send_verification_email(user)
+            except Exception as e:
+                logger.error(f"Failed to send verification email on login: {e}")
+            return Response(
+                {
+                    'detail': 'Email verification required. A verification code has been sent to your email.',
+                    'email_verified': False,
+                    'email': user.email
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         tokens = _get_tokens_for_user(user)
         response = Response({'access': tokens['access']}, status=status.HTTP_200_OK)
         _set_refresh_cookie(response, tokens['refresh'])
@@ -116,6 +134,21 @@ class RegisterView(APIView):
                 role=role,
                 place_id=place,
                 building_id=building,
+                is_email_verified=is_first_user,  # auto-verify the first bootstrap admin
+            )
+
+        if not is_first_user:
+            try:
+                send_verification_email(user)
+            except Exception as e:
+                logger.error(f"Failed to send registration verification email: {e}")
+            return Response(
+                {
+                    'detail': 'Registration successful. A verification code has been sent to your email.',
+                    'email_verified': False,
+                    'email': user.email
+                },
+                status=status.HTTP_201_CREATED,
             )
 
         tokens = _get_tokens_for_user(user)
@@ -281,3 +314,192 @@ class PlaceListView(APIView):
             place.save()
         serializer = PlaceSerializer(place)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class VerifyEmailView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+        code = request.data.get('code', '').strip()
+
+        if not email or not code:
+            return Response(
+                {'detail': 'Email and code are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response(
+                {'detail': 'Invalid email or code'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = timezone.now()
+        verification = EmailVerificationCode.objects.filter(
+            user=user,
+            code=code,
+            is_used=False,
+            expires_at__gt=now
+        ).first()
+
+        if not verification:
+            return Response(
+                {'detail': 'Invalid or expired verification code'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        verification.is_used = True
+        verification.save()
+
+        profile = getattr(user, 'profile', None)
+        if profile:
+            profile.is_email_verified = True
+            profile.save()
+
+        tokens = _get_tokens_for_user(user)
+        response = Response(
+            {'access': tokens['access'], 'detail': 'Email verified successfully'},
+            status=status.HTTP_200_OK,
+        )
+        _set_refresh_cookie(response, tokens['refresh'])
+        return response
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+        if not email:
+            return Response(
+                {'detail': 'Email is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.get(email=email)
+            send_password_reset_email(user)
+        except User.DoesNotExist:
+            pass
+        except Exception as e:
+            logger.error(f"Error in PasswordResetRequestView: {e}")
+            return Response(
+                {'detail': 'Failed to send password reset email. Please try again later.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {'detail': 'If the email is registered, a password reset code has been sent.'},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+        code = request.data.get('code', '').strip()
+        password = request.data.get('password', '')
+        confirm_password = request.data.get('confirm_password', '')
+
+        if not email or not code or not password or not confirm_password:
+            return Response(
+                {'detail': 'All fields (email, code, password, confirm_password) are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if password != confirm_password:
+            return Response(
+                {'detail': 'Passwords do not match'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(password) < 8:
+            return Response(
+                {'detail': 'Password must be at least 8 characters long'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response(
+                {'detail': 'Invalid email or code'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        now = timezone.now()
+        reset_code = PasswordResetCode.objects.filter(
+            user=user,
+            code=code,
+            is_used=False,
+            expires_at__gt=now
+        ).first()
+
+        if not reset_code:
+            return Response(
+                {'detail': 'Invalid or expired password reset code'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reset_code.is_used = True
+        reset_code.save()
+
+        user.set_password(password)
+        user.save()
+
+        profile = getattr(user, 'profile', None)
+        if profile and not profile.is_email_verified:
+            profile.is_email_verified = True
+            profile.save()
+
+        return Response(
+            {'detail': 'Password has been reset successfully'},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PasswordChangeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        old_password = request.data.get('old_password', '')
+        new_password = request.data.get('new_password', '')
+        confirm_new_password = request.data.get('confirm_new_password', '')
+
+        if not old_password or not new_password or not confirm_new_password:
+            return Response(
+                {'detail': 'All fields (old_password, new_password, confirm_new_password) are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if new_password != confirm_new_password:
+            return Response(
+                {'detail': 'New passwords do not match'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(new_password) < 8:
+            return Response(
+                {'detail': 'Password must be at least 8 characters long'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        if not user.check_password(old_password):
+            return Response(
+                {'detail': 'Incorrect old password'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response(
+            {'detail': 'Password changed successfully'},
+            status=status.HTTP_200_OK,
+        )
