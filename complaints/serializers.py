@@ -200,12 +200,21 @@ class RegisterSerializer(serializers.Serializer):
     last_name = serializers.CharField(max_length=50, required=False, allow_blank=True)
     place_id = serializers.IntegerField(required=False, allow_null=True)
     building_id = serializers.IntegerField(required=False, allow_null=True)
+    invite_token = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     def validate_email(self, value):
+        from .models import InviteToken
+
         email = value.strip().lower()
         domain = email.split('@')[-1] if '@' in email else ''
         allowed = [d.strip().lower() for d in settings.ALLOWED_EMAIL_DOMAINS]
-        if domain not in allowed:
+        invite_token = self.initial_data.get('invite_token')
+        
+        if invite_token:
+            if not InviteToken.objects.filter(token=invite_token, is_used=False).exists():
+                raise serializers.ValidationError('Недійсне або вже використане посилання-запрошення')
+
+        if domain not in allowed and not invite_token:
             raise serializers.ValidationError(
                 f'Email domain @{domain} is not authorized'
             )

@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import User
+import uuid
 
 
 COMPLAINT_STATUS = [
@@ -171,6 +172,21 @@ class Notification(models.Model):
         ordering = ['-created_at']
 
 
+
+class InviteToken(models.Model):
+    token = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    building_id = models.IntegerField(null=True, blank=True)
+    place_id = models.IntegerField(null=True, blank=True)
+    is_used = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
+    
+    class Meta:
+        db_table = 'invite_token'
+        ordering = ['-created_at']
+        
+        
 class EmailVerificationCode(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_verification_codes')
     code = models.CharField(max_length=6)
@@ -220,6 +236,3 @@ class Announcement(models.Model):
     class Meta:
         db_table = 'announcement'
         ordering = ['-created_at']
-
-
-
