@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker, Announcement
 from .image_utils import process_complaint_photo
 
 
@@ -35,7 +35,7 @@ def _validate_assignable_place(place, exclude_profile_pk=None):
 class DormitoryBuildingSerializer(serializers.ModelSerializer):
     class Meta:
         model = DormitoryBuilding
-        fields = ("building_id", "name", "address", "commandant_phone", "duty_master_phone")
+        fields = ("building_id", "name", "address", "commandant_phone")
 
 
 class PlaceSerializer(serializers.ModelSerializer):
@@ -259,4 +259,26 @@ class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
         fields = ['notification_id', 'user', 'title', 'message', 'complaint', 'is_read', 'created_at']
+
+
+class AnnouncementSerializer(serializers.ModelSerializer):
+    building_name = serializers.CharField(source='building.name', read_only=True, default=None)
+    created_by_name = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Announcement
+        fields = ['announcement_id', 'title', 'body', 'building', 'building_name',
+                  'is_pinned', 'expires_at', 'is_expired',
+                  'created_by', 'created_by_name', 'created_at']
+        read_only_fields = ['created_by', 'created_at']
+
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            return f"{obj.created_by.first_name} {obj.created_by.last_name}".strip() or None
+        return None
+
+    def get_is_expired(self, obj):
+        from django.utils import timezone
+        return bool(obj.expires_at and obj.expires_at < timezone.localdate())
 

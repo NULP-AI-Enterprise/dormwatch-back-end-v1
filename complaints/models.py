@@ -29,7 +29,6 @@ class DormitoryBuilding(models.Model):
     name = models.CharField(max_length=255)
     address = models.TextField()
     commandant_phone = models.CharField(max_length=32, blank=True)
-    duty_master_phone = models.CharField(max_length=32, blank=True)
 
     class Meta:
         db_table = 'dormitory_building'
@@ -76,12 +75,14 @@ class UserProfile(models.Model):
         DormitoryBuilding, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='residents',
     )
+    is_email_verified = models.BooleanField(default=False)
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
     
     class Meta:
         db_table = "user_profile"
+
 
 
 class ComplaintCategory(models.Model):
@@ -171,6 +172,7 @@ class Notification(models.Model):
         ordering = ['-created_at']
 
 
+
 class InviteToken(models.Model):
     token = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     role = models.ForeignKey(Role, on_delete=models.CASCADE)
@@ -179,7 +181,58 @@ class InviteToken(models.Model):
     is_used = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-
+    
     class Meta:
         db_table = 'invite_token'
+        ordering = ['-created_at']
+        
+        
+class EmailVerificationCode(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='email_verification_codes')
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'email_verification_code'
+
+
+class PasswordResetCode(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='password_reset_codes')
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_used = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = 'password_reset_code'
+
+        
+class Announcement(models.Model):
+    announcement_id = models.AutoField(primary_key=True)
+    title = models.CharField(max_length=255)
+    body = models.TextField()
+    # Nullable = GLOBAL (visible to every building). Set = scoped to one building.
+    building = models.ForeignKey(
+        DormitoryBuilding, on_delete=models.CASCADE,
+        null=True, blank=True, related_name='announcements',
+    )
+    is_pinned = models.BooleanField(default=False)
+    # Calendar day the notice stops being "active". Expired = expires_at < today.
+    # Expiry only marks/hides (dashboard widget drops it, resident page shows it
+    # archived) — it never deletes. Crossing this date also clears is_pinned via a
+    # lazy sweep at read time (there is no scheduler; see views._sweep_expired_pins).
+    expires_at = models.DateField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        UserProfile, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='authored_announcements',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.title
+
+    class Meta:
+        db_table = 'announcement'
         ordering = ['-created_at']
