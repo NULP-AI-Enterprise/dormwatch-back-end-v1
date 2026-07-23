@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("complaints", "0016_complaint_resolved_at"),
+        ("complaints", "0017_userprofile_is_email_verified_emailverificationcode_and_more"),
     ]
 
     operations = [
