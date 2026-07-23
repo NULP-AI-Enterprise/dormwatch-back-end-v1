@@ -9,7 +9,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('complaints', '0016_complaint_resolved_at'),
+        ('complaints', '0018_announcement'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

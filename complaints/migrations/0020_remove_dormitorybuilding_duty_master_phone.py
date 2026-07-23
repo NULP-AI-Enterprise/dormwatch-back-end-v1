@@ -6,7 +6,7 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('complaints', '0016_complaint_resolved_at'),
+        ('complaints', '0019_invitetoken'),
     ]
 
     operations = [
