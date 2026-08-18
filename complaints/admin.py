@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, ComplaintCategory, Role, Ticket, Place
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, ComplaintCategory, Role, Ticket, Place, Announcement
 # Register your models here.
 class ComplaintAdmin(admin.ModelAdmin):
     raw_id_fields = ['user', 'place', 'category']
@@ -21,3 +21,4 @@ admin.site.register(ComplaintCategory)
 admin.site.register(Comment, CommentAdmin)
 admin.site.register(Ticket, TicketAdmin)
 admin.site.register(Place)
+admin.site.register(Announcement)
