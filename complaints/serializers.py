@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker, Announcement
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Notification, Worker, Announcement, ComplaintEvent, COMPLAINT_STATUS, COMPLAINT_PRIORITY
 from .image_utils import process_complaint_photo
 
 
@@ -97,14 +97,67 @@ class UserComplaintSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = ['user', 'first_name', 'last_name', 'photo_url']
 
+
+class WorkerSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Worker
+        fields = ['worker_id', 'full_name', 'company', 'phone']
+
+class ComplaintEventSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ComplaintEvent
+        fields = ['event_id', 'action', 'actor', 'actor_name', 'created_at']
+
+    def get_actor_name(self, obj):
+        if obj.actor is None:
+            return None
+        return f"{obj.actor.first_name} {obj.actor.last_name}".strip() or None
+
+
+# Public board serializer: rooms/photos and the author identity are hidden
+# from everyone but staff — the feed shows what happened, never who/where
+# exactly lives behind it.
+class PublicComplaintSerializer(serializers.ModelSerializer):
+    category = CategorySerializer(read_only=True)
+    building_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Complaint
+        fields = ['complaint_id', 'title', 'description', 'category', 'status',
+                  'priority', 'created_at', 'building_name']
+
+    def get_building_name(self, obj):
+        place = obj.place
+        return place.building.name if place and place.building else None
+
+
+# Owner/admin read shape: full lifecycle + assignment + re-file chain links.
 class ComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     place = PlaceSerializer(read_only=True)
     user = UserComplaintSerializer(read_only=True)
+    worker = WorkerSerializer(read_only=True)
+
     class Meta:
         model = Complaint
-        fields = ['complaint_id', 'user', 'title', 'description', 'category', 'status', 'photo_url', 'thumbnail', 'created_at', 'place', 'priority']
+        fields = [
+            'complaint_id', 'user', 'title', 'description', 'category', 'status',
+            'photo_url', 'thumbnail', 'created_at', 'place', 'priority',
+            'resolved_at',
+            'worker', 'deadline', 'started_at', 'finished_at', 'work_note',
+            'rejection_reason', 'rework_reason',
+            'follow_up_of', 'root',
+        ]
         read_only_fields = ['complaint_id', 'created_at', 'user', 'status']
+
+
+# Resident create whitelist: a resident payload has no status/priority/worker.
+class ComplaintCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Complaint
+        fields = ['title', 'description', 'photo_url']
 
     def create(self, validated_data):
         uploaded_file = validated_data.pop('photo_url', None)
@@ -115,17 +168,52 @@ class ComplaintSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class WorkerSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Worker
-        fields = ['worker_id', 'full_name', 'company', 'phone']
+# Admin detail: everything above plus soft-delete bookkeeping, the event log,
+# and the follow-up chain children.
+class AdminComplaintDetailSerializer(ComplaintSerializer):
+    events = ComplaintEventSerializer(many=True, read_only=True)
+
+    class Meta(ComplaintSerializer.Meta):
+        fields = ComplaintSerializer.Meta.fields + [
+            'archived', 'archived_by', 'archived_at', 'events',
+        ]
 
 
-class TicketSerializer(serializers.ModelSerializer):
-    worker = WorkerSerializer(read_only=True)
+# Admin PATCH whitelist. The allowed-field list IS the rule: assignment,
+# deadline, triage status moves, rejection reason, priority. Anything else a
+# client sends here is ignored, and other endpoints simply don't accept these
+# fields for their roles.
+class AdminComplaintUpdateSerializer(serializers.Serializer):
+    worker_id = serializers.IntegerField(required=False, allow_null=True)
+    deadline = serializers.DateTimeField(required=False, allow_null=True)
+    status = serializers.ChoiceField(choices=[s for s, _ in COMPLAINT_STATUS], required=False)
+    rejection_reason = serializers.CharField(required=False, allow_blank=True)
+    priority = serializers.ChoiceField(choices=[p for p, _ in COMPLAINT_PRIORITY], required=False)
+
+
+# Worker-scoped read: job context only (what to fix, where, by when). No
+# resident identity, no dorm-wide fields.
+class WorkerComplaintSerializer(serializers.ModelSerializer):
+    category = CategorySerializer(read_only=True)
+    place = PlaceSerializer(read_only=True)
+
     class Meta:
-        model = Ticket
-        fields = ['ticket_id', 'worker', 'complaint', 'deadline']
+        model = Complaint
+        fields = ['complaint_id', 'title', 'description', 'category', 'status',
+                  'priority', 'place', 'photo_url', 'thumbnail',
+                  'deadline', 'started_at', 'finished_at', 'work_note']
+
+
+# Worker PATCH whitelist: stamps via explicit action verbs + optional note.
+class WorkerStampSerializer(serializers.Serializer):
+    ACTION_CHOICES = [
+        ('start', 'Взято в роботу'),
+        ('finish', 'Виконано'),
+        ('start_undo', 'Скасовано початок робіт'),
+        ('finish_undo', 'Скасовано виконання'),
+    ]
+    action = serializers.ChoiceField(choices=ACTION_CHOICES)
+    note = serializers.CharField(required=False, allow_blank=True)
 
 
 class UpdateUserRoleSerializer(serializers.ModelSerializer):
@@ -169,14 +257,6 @@ class AdminUpdateUserSerializer(serializers.ModelSerializer):
         return data
 
 
-class ComplaintStatusSerializer(serializers.ModelSerializer):
-    category_name = serializers.CharField(write_only=True, required=False)
-
-    class Meta:
-        model = Complaint
-        fields = ['status', 'priority', 'title', 'description', 'category_name']
-
-    
 class CommentSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     author_is_admin = serializers.SerializerMethodField()
