@@ -1,5 +1,7 @@
 from datetime import timedelta
+import os
 
+from django.core.files.base import File
 from django.shortcuts import render
 from django.db.models import F, Q
 from django.utils import timezone
@@ -902,10 +904,30 @@ class ResidentComplaintActionView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             complaint.rework_reason = reason
+            # Persisted here because transition() writes only status + stamps.
+            complaint.save(update_fields=['rework_reason'])
 
         complaint.transition(to_state)
         _stage_transition_notices(complaint, actor=actor)
         return Response(ComplaintSerializer(complaint).data, status=status.HTTP_200_OK)
+
+
+def _clone_complaint_media(source, target):
+    '''Copy photo_url/thumbnail into a re-filed complaint. The follow-up gets
+    its own stored file (the source keeps its original), so deleting or
+    archiving one never breaks the other's image. A storage failure degrades
+    to "follow-up without photo" rather than blocking the re-file.'''
+    for field_name in ('photo_url', 'thumbnail'):
+        src = getattr(source, field_name)
+        if not src:
+            continue
+        try:
+            with src.open('rb') as fh:
+                getattr(target, field_name).save(
+                    os.path.basename(src.name), File(fh), save=False,
+                )
+        except Exception as e:
+            print(f"Error cloning {field_name} on refile:", e)
 
 
 class ComplaintRefileView(APIView):
@@ -951,6 +973,8 @@ class ComplaintRefileView(APIView):
                 {'follow_up_of': 'Відкрите повторне звернення за цим зверненням уже існує'},
                 status=status.HTTP_409_CONFLICT,
             )
+        _clone_complaint_media(source, follow_up)
+        follow_up.save()
         # Admins hear about follow-up filings immediately (nothing undoable).
         try:
             for admin in _admin_profiles():
