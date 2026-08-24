@@ -2,7 +2,7 @@ from datetime import timedelta
 import os
 
 from django.core.files.base import File
-from django.shortcuts import render
+from django.db.models import BooleanField, Case, Value, When
 from django.db.models import F, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -87,6 +87,25 @@ def _get_profile(request):
     return UserProfile.objects.filter(user=request.user).first()
 
 
+def annotate_is_overdue(queryset):
+    '''    The single overdue definition: a live complaint ("В роботі") whose
+    deadline has passed. One timezone (timezone.now), one expression — the
+    queryset annotation shared by the admin filter (?overdue=true), the
+    serializers' is_overdue field, and every export/print surface reading the
+    admin list payload. Overdue is derived, never stored: fixing the deadline
+    or advancing the state clears it with no extra write.'''
+    now = timezone.now()
+    # Annotated under a distinct name — an annotation cannot shadow the
+    # read-only `Complaint.is_overdue` property (setattr would fail).
+    return queryset.annotate(
+        overdue_flag=Case(
+            When(Q(status='in_progress') & Q(deadline__lt=now), then=Value(True)),
+            default=Value(False),
+            output_field=BooleanField(),
+        )
+    )
+
+
 def _is_admin(user_profile):
     return bool(user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор'])
 
@@ -160,6 +179,29 @@ def _sweep_transition_notices():
         for n in due
     ])
     PendingTransitionNotice.objects.filter(notice_id__in=[n.notice_id for n in due]).delete()
+
+
+OVERDUE_NOTICE_TITLE = 'Прострочений дедлайн'
+
+
+def _sweep_overdue_deadlines():
+    '''Deadline notifications: admins hear once per overdue complaint ("В
+    роботі" past its deadline). Lazy like the transition sweep — no scheduler;
+    deduped by the notice title on the complaint so re-reads never re-ping.'''
+    overdue = Complaint.objects.filter(
+        status='in_progress', deadline__lt=timezone.now(), archived=False,
+    )
+    for complaint in overdue:
+        if Notification.objects.filter(complaint=complaint, title=OVERDUE_NOTICE_TITLE).exists():
+            continue
+        deadline_label = timezone.localtime(complaint.deadline).strftime('%d.%m.%Y %H:%M')
+        for admin in _admin_profiles():
+            Notification.objects.create(
+                user=admin,
+                title=OVERDUE_NOTICE_TITLE,
+                message=f"Звернення «{complaint.title}» прострочило дедлайн ({deadline_label}).",
+                complaint=complaint,
+            )
 
 
 def _notify_worker_accounts(worker_ids, title, message, complaint):
@@ -385,7 +427,9 @@ class ComplaintView(APIView):
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
         is_admin = _is_admin(user_profile)
 
-        complaints = Complaint.objects.filter(archived=False).select_related('category', 'place__building', 'user', 'worker')
+        complaints = annotate_is_overdue(
+            Complaint.objects.filter(archived=False).select_related('category', 'place__building', 'user', 'worker')
+        )
         if is_admin:
             serializer_class = ComplaintSerializer
         else:
@@ -398,6 +442,7 @@ class ComplaintView(APIView):
         status_param = request.query_params.get('status')
         corps_param = request.query_params.get('corps')
         priority_param = request.query_params.get('priority')
+        overdue_param = request.query_params.get('overdue')
         if category_param:
             complaints = complaints.filter(category_id=category_param)
         if status_param:
@@ -406,6 +451,10 @@ class ComplaintView(APIView):
             complaints = complaints.filter(user__place__building__name=corps_param)
         if priority_param:
             complaints = complaints.filter(priority=priority_param)
+        # Admin triage filter over the derived flag (annotation survives the
+        # chained .filter calls above).
+        if overdue_param in ('true', '1'):
+            complaints = complaints.filter(overdue_flag=True)
         serializer = serializer_class(complaints, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -1240,6 +1289,9 @@ class NotificationListView(APIView):
         # Materialize transition notices whose undo window has passed before
         # reading (announcements-style lazy sweep — no scheduler).
         _sweep_transition_notices()
+        # Deadline notifications ride the same lazy sweep: admins learn about
+        # overdue work when they next open the bell.
+        _sweep_overdue_deadlines()
         notifications = Notification.objects.filter(user=user_profile).order_by('-created_at')[:50]
         serializer = NotificationSerializer(notifications, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

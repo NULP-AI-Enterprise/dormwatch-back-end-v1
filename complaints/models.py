@@ -177,6 +177,18 @@ class Complaint(models.Model):
     def __str__(self):
         return f"{self.title}, ({self.category})"
 
+    @property
+    def is_overdue(self):
+        '''Python-side twin of the SQL annotation in views.annotate_is_overdue
+        (same predicate, same clock): "В роботі" past its deadline. Used by the
+        serializers when a queryset wasn't annotated; lists and filters always
+        read the annotation.'''
+        return (
+            self.status == 'in_progress'
+            and self.deadline is not None
+            and self.deadline < timezone.now()
+        )
+
     def transition(self, new_status):
         '''The single lifecycle mutation point. Every endpoint changes status
         through here so `status` and its timestamps (started_at / finished_at /

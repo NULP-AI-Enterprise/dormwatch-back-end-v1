@@ -139,6 +139,10 @@ class ComplaintSerializer(serializers.ModelSerializer):
     place = PlaceSerializer(read_only=True)
     user = UserComplaintSerializer(read_only=True)
     worker = WorkerSerializer(read_only=True)
+    # Derived, never stored: the views.annotate_is_overdue annotation
+    # (`overdue_flag`) when present (lists), the model property otherwise
+    # (single objects).
+    is_overdue = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
@@ -148,9 +152,15 @@ class ComplaintSerializer(serializers.ModelSerializer):
             'resolved_at',
             'worker', 'deadline', 'started_at', 'finished_at', 'work_note',
             'rejection_reason', 'rework_reason',
-            'follow_up_of', 'root',
+            'follow_up_of', 'root', 'is_overdue',
         ]
         read_only_fields = ['complaint_id', 'created_at', 'user', 'status']
+
+    def get_is_overdue(self, obj):
+        flagged = getattr(obj, 'overdue_flag', None)
+        if flagged is not None:
+            return flagged
+        return bool(obj.is_overdue)
 
 
 # Resident create whitelist: a resident payload has no status/priority/worker.
