@@ -330,6 +330,12 @@ class PendingTransitionNotice(models.Model):
 class InviteToken(models.Model):
     token = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    # Worker-variant invite: bound to the Worker row being provisioned, so
+    # redemption links the new account 1:1 from that worker.
+    worker = models.OneToOneField(
+        'Worker', on_delete=models.CASCADE, null=True, blank=True,
+        related_name='invite_tokens',
+    )
     building_id = models.IntegerField(null=True, blank=True)
     place_id = models.IntegerField(null=True, blank=True)
     is_used = models.BooleanField(default=False)

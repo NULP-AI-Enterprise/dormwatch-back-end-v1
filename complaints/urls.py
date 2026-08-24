@@ -44,6 +44,7 @@ urlpatterns = [
     path('profile/', views.UserProfileView.as_view(), name="user-profile"),
     path('admin/workers/', views.WorkerListCreateView.as_view(), name='admin-workers'),
     path('admin/workers/<int:worker_id>/', views.WorkerDetailView.as_view(), name='admin-worker-detail'),
+    path('admin/workers/<int:worker_id>/invite/', views.WorkerInviteView.as_view(), name='admin-worker-invite'),
     path('categories/', views.CategoryListView.as_view(), name='categories'),
     path('admin/categories/', views.AdminCategoryCreateView.as_view(), name='admin-categories'),
     path('admin/categories/<int:category_id>/', views.AdminCategoryDetailView.as_view(), name='admin-category-detail'),

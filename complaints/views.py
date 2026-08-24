@@ -12,7 +12,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db import IntegrityError
 from .models import (
     Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory,
-    Role, Notification, PendingTransitionNotice, Worker, Announcement,
+    Role, Notification, PendingTransitionNotice, Worker, Announcement, InviteToken,
 )
 from .serializers import (
     ComplaintSerializer, ComplaintCreateSerializer, PublicComplaintSerializer,
@@ -1229,6 +1229,30 @@ class WorkerDetailView(APIView):
         # deleting them.
         worker.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WorkerInviteView(APIView):
+    '''Provision a worker account: mint a single-use invite token (no expiry)
+    bound to this Worker. The admin hands the redemption link over by email or
+    a printed QR; at /auth?invite=... the worker supplies their own email —
+    any domain — and password. Never an admin-set password.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def post(self, request, worker_id):
+        try:
+            worker = Worker.objects.get(worker_id=worker_id)
+        except Worker.DoesNotExist:
+            return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
+        if worker.account_id:
+            return Response(
+                {'detail': 'Цей працівник уже має обліковий запис'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        role = Role.objects.filter(role_name='worker').first()
+        if role is None:
+            role = Role.objects.create(role_name='worker')
+        token = InviteToken.objects.create(role=role, worker=worker, created_by=request.user)
+        return Response({'invite_token': str(token.token)}, status=status.HTTP_201_CREATED)
 
 
 class CompletedReportView(APIView):
