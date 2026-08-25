@@ -207,7 +207,8 @@ class AdminComplaintUpdateSerializer(serializers.Serializer):
 
 
 # Worker-scoped read: job context only (what to fix, where, by when). No
-# resident identity, no dorm-wide fields.
+# resident identity, no dorm-wide fields. Chain links + created_at let the
+# panel cite "Повторне до №N" and order a saga; stamps power the history.
 class WorkerComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     place = PlaceSerializer(read_only=True)
@@ -216,7 +217,8 @@ class WorkerComplaintSerializer(serializers.ModelSerializer):
         model = Complaint
         fields = ['complaint_id', 'title', 'description', 'category', 'status',
                   'priority', 'place', 'photo_url', 'thumbnail',
-                  'deadline', 'started_at', 'finished_at', 'work_note']
+                  'deadline', 'started_at', 'finished_at', 'work_note',
+                  'follow_up_of', 'root', 'created_at']
 
 
 # Worker PATCH whitelist: stamps via explicit action verbs + optional note.

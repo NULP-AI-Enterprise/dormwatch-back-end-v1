@@ -1039,8 +1039,10 @@ class ComplaintRefileView(APIView):
 
 
 class WorkerComplaintListView(APIView):
-    '''Account-holding workers read their own job list: assigned, live, scoped
-    to job context only (no resident identity, no dorm-wide feed).'''
+    '''Account-holding workers read their own jobs, scoped to job context only
+    (no resident identity, no dorm-wide feed). Default: the live list sorted by
+    next deadline. ?history=true: past jobs (finished or terminal) with their
+    stamps — the worker's own evidence for pay disputes.'''
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -1053,10 +1055,21 @@ class WorkerComplaintListView(APIView):
         complaints = (
             Complaint.objects
             .filter(worker=worker, archived=False)
-            .exclude(status__in=TERMINAL_STATUSES)
             .select_related('category', 'place__building')
-            .order_by('deadline')
         )
+        history = request.query_params.get('history') in ('true', '1')
+        if history:
+            complaints = (
+                complaints
+                .filter(Q(finished_at__isnull=False) | Q(status__in=TERMINAL_STATUSES))
+                .order_by(F('finished_at').desc(nulls_last=True), '-created_at')
+            )
+        else:
+            complaints = (
+                complaints
+                .exclude(status__in=TERMINAL_STATUSES)
+                .order_by('deadline')
+            )
         serializer = WorkerComplaintSerializer(complaints, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
