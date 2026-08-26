@@ -110,6 +110,7 @@ class Complaint(models.Model):
     resolved_at = models.DateTimeField(null=True, blank=True)
     category = models.ForeignKey(ComplaintCategory, on_delete=models.SET_NULL, null=True, blank=True)
     priority = models.CharField(max_length=50, choices=COMPLAINT_PRIORITY, default='medium')
+    rejection_reason = models.TextField(blank=True, default='')
     
 
     def __str__(self):

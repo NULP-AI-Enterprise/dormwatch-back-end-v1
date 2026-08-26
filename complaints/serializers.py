@@ -103,7 +103,7 @@ class ComplaintSerializer(serializers.ModelSerializer):
     user = UserComplaintSerializer(read_only=True)
     class Meta:
         model = Complaint
-        fields = ['complaint_id', 'user', 'title', 'description', 'category', 'status', 'photo_url', 'thumbnail', 'created_at', 'place', 'priority']
+        fields = ['complaint_id', 'user', 'title', 'description', 'category', 'status', 'photo_url', 'thumbnail', 'created_at', 'place', 'priority', 'rejection_reason']
         read_only_fields = ['complaint_id', 'created_at', 'user', 'status']
 
     def create(self, validated_data):
@@ -174,7 +174,7 @@ class ComplaintStatusSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Complaint
-        fields = ['status', 'priority', 'title', 'description', 'category_name']
+        fields = ['status', 'priority', 'title', 'description', 'category_name', 'rejection_reason']
 
     
 class CommentSerializer(serializers.ModelSerializer):
@@ -225,21 +225,21 @@ class RegisterSerializer(serializers.Serializer):
     def validate(self, data):
         if data.get('password') != data.get('confirm_password'):
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match'})
-        # Building is required once any building exists. On an empty DB (first
-        # user / admin bootstrap) there is nothing to pick, so it stays optional.
-        building_id = data.get('building_id')
-        if DormitoryBuilding.objects.exists() and not building_id:
-            raise serializers.ValidationError({'building_id': 'Building selection is required'})
-        if building_id and not DormitoryBuilding.objects.filter(building_id=building_id).exists():
-            raise serializers.ValidationError({'building_id': 'Building not found'})
-        # A new user has no existing profile, so occupancy is the raw count.
-        # Same rule as admin assignment: shared/full/capacity-0 rooms are rejected.
-        place_id = data.get('place_id')
-        if place_id:
-            place = Place.objects.filter(place_id=place_id).first()
-            if place is None:
-                raise serializers.ValidationError({'place_id': 'Room not found'})
-            _validate_assignable_place(place)
+        invite_token = data.get('invite_token')
+        # Building is required for normal student registration once any building exists.
+        # For invite registration or empty DB bootstrap, building stays optional.
+        if not invite_token:
+            building_id = data.get('building_id')
+            if DormitoryBuilding.objects.exists() and not building_id:
+                raise serializers.ValidationError({'building_id': 'Building selection is required'})
+            if building_id and not DormitoryBuilding.objects.filter(building_id=building_id).exists():
+                raise serializers.ValidationError({'building_id': 'Building not found'})
+            place_id = data.get('place_id')
+            if place_id:
+                place = Place.objects.filter(place_id=place_id).first()
+                if place is None:
+                    raise serializers.ValidationError({'place_id': 'Room not found'})
+                _validate_assignable_place(place)
         return data
 
     def create(self, validated_data):

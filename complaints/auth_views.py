@@ -62,8 +62,19 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Check verification
+        # Check domain restrictions only for student accounts
         profile = getattr(user, 'profile', None)
+        is_student = profile and profile.role and profile.role.role_name.lower() in ['student', 'студент']
+        if is_student:
+            domain = email.split('@')[-1] if '@' in email else ''
+            allowed = [d.strip().lower() for d in settings.ALLOWED_EMAIL_DOMAINS]
+            if domain not in allowed:
+                return Response(
+                    {'detail': f'Email domain @{domain} is not authorized for student accounts'},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+        # Check verification
         if not profile or not profile.is_email_verified:
             try:
                 send_verification_email(user)
@@ -105,6 +116,7 @@ class RegisterView(APIView):
                     pass
 
             is_first_user = not UserProfile.objects.exists()
+            is_auto_verified = is_first_user or (invite is not None)
 
             if is_first_user:
                 role, _ = Role.objects.get_or_create(role_name='admin')
@@ -150,10 +162,10 @@ class RegisterView(APIView):
                 role=role,
                 place_id=place,
                 building_id=building,
-                is_email_verified=is_first_user,  # auto-verify the first bootstrap admin
+                is_email_verified=is_auto_verified,
             )
 
-        if not is_first_user:
+        if not is_auto_verified:
             try:
                 send_verification_email(user)
             except Exception as e:
@@ -328,20 +340,29 @@ class InviteTokenCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if getattr(request.user, 'is_staff', False) is not True:
+        user_profile = UserProfile.objects.filter(user=request.user).first()
+        is_admin = bool(
+            getattr(request.user, 'is_staff', False) or
+            (user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор'])
+        )
+        if not is_admin:
             return Response({'detail': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
             
         role_id = request.data.get('role_id')
+        role_name = request.data.get('role_name') or request.data.get('role')
         building_id = request.data.get('building_id')
         place_id = request.data.get('place_id')
         
-        if not role_id:
-            return Response({'detail': 'role_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        try:
-            role = Role.objects.get(role_id=role_id)
-        except Role.DoesNotExist:
-            return Response({'detail': 'Role not found'}, status=status.HTTP_404_NOT_FOUND)
+        role = None
+        if role_id:
+            try:
+                role = Role.objects.get(role_id=role_id)
+            except Role.DoesNotExist:
+                return Response({'detail': 'Role not found'}, status=status.HTTP_404_NOT_FOUND)
+        elif role_name:
+            role, _ = Role.objects.get_or_create(role_name=role_name.strip().lower())
+        else:
+            return Response({'detail': 'role_id or role_name is required'}, status=status.HTTP_400_BAD_REQUEST)
             
         token = InviteToken.objects.create(
             role=role,
@@ -350,7 +371,11 @@ class InviteTokenCreateView(APIView):
             created_by=request.user
         )
         
-        return Response({'invite_token': str(token.token)}, status=status.HTTP_201_CREATED)
+        return Response({
+            'invite_token': str(token.token),
+            'role': role.role_name,
+            'role_id': role.role_id,
+        }, status=status.HTTP_201_CREATED)
       
 
 class VerifyEmailView(APIView):

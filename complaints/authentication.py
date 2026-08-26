@@ -9,7 +9,18 @@ class EmailDomainJWTAuthentication(JWTAuthentication):
         if result is None:
             return None
         user, validated_token = result
-        email = validated_token.get('email', '')
-        if not email:
-            raise AuthenticationFailed('Token missing email claim')
+        
+        from complaints.models import UserProfile
+        user_profile = UserProfile.objects.filter(user=user).first()
+        is_student = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['student', 'студент']
+
+        if is_student:
+            email = validated_token.get('email', '')
+            if not email:
+                raise AuthenticationFailed('Token missing email claim')
+            domain = email.split('@')[-1].lower() if '@' in email else ''
+            if domain not in settings.ALLOWED_EMAIL_DOMAINS:
+                raise AuthenticationFailed(
+                    f'Email domain @{domain} is not authorized for student accounts'
+                )
         return (user, validated_token)

@@ -440,6 +440,8 @@ class RoleListView(APIView):
     permission_classes = [IsAdminOrCustomAdmin]
 
     def get(self, request):
+        for r_name in ['student', 'admin', 'worker']:
+            Role.objects.get_or_create(role_name=r_name)
         roles = Role.objects.all().order_by('role_name')
         serializer = RoleSerializer(roles, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -554,7 +556,7 @@ class AdminComplaintStatusView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        for field in ['status', 'priority', 'title', 'description']:
+        for field in ['status', 'priority', 'title', 'description', 'rejection_reason']:
             if field in serializer.validated_data:
                 setattr(complaint, field, serializer.validated_data[field])
 
@@ -593,10 +595,24 @@ class AdminComplaintStatusView(APIView):
                     'resolved': 'Вирішено'
                 }
                 status_label = status_labels.get(complaint.status, complaint.status)
+
+                if complaint.status == 'resolved':
+                    title = f"Заявку вирішено: {complaint.title}"
+                    message = "Ваша заявка вирішена. Перевірте її, будь ласка."
+                elif complaint.status == 'denied':
+                    title = f"Заявку відхилено: {complaint.title}"
+                    if complaint.rejection_reason:
+                        message = f"Статус вашої заявки змінено на: {status_label}. Причина: {complaint.rejection_reason}"
+                    else:
+                        message = f"Статус вашої заявки змінено на: {status_label}"
+                else:
+                    title = f"Оновлення статусу: {complaint.title}"
+                    message = f"Статус вашої заявки змінено на: {status_label}"
+
                 Notification.objects.create(
                     user=complaint.user,
-                    title=f"Оновлення статусу: {complaint.title}",
-                    message=f"Статус скарги змінено на: {status_label}",
+                    title=title,
+                    message=message,
                     complaint=complaint
                 )
             except Exception as e:
