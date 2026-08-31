@@ -514,27 +514,39 @@ class UserComplaintView(APIView):
         category_obj = None
         target_place = None
 
-        # A resident may only file against their OWN room or a shared room in
-        # their building — never an arbitrary room, and never a newly invented
-        # one (no implicit get_or_create). place_name (free-text create) is no
-        # longer accepted here.
+        # A resident may file against any place in their building — their own
+        # room (the default), a shared/common area (kitchen, laundry, hallway),
+        # or any other room. A place outside the building, or none at all, is
+        # rejected: a complaint must always carry a real location. place_name
+        # (free-text create) is no longer accepted here.
+        building = user_profile.building
+        if building is None and user_profile.place:
+            building = user_profile.place.building
+
         if place_id:
-            allowed = {p.place_id for p in _allowed_complaint_places(user_profile)}
             try:
                 place_id_int = int(place_id)
             except (TypeError, ValueError):
                 return Response(
-                    {'place': 'Можна обрати лише власну або спільну кімнату'},
+                    {'place': 'Можна обрати лише кімнату вашого гуртожитку'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if place_id_int not in allowed:
+            target_place = Place.objects.filter(
+                place_id=place_id_int, building=building
+            ).first()
+            if target_place is None:
                 return Response(
-                    {'place': 'Можна обрати лише власну або спільну кімнату'},
+                    {'place': 'Можна обрати лише кімнату вашого гуртожитку'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            target_place = Place.objects.get(place_id=place_id_int)
         elif user_profile.place:
             target_place = user_profile.place
+
+        if target_place is None:
+            return Response(
+                {'place': 'Місце обовʼязкове — оберіть кімнату або спільну зону'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if category_name:
             category_obj, _ = ComplaintCategory.objects.get_or_create(name=category_name)
@@ -1321,6 +1333,7 @@ class CompletedReportView(APIView):
                 'resolved_at': complaint.resolved_at,
                 'building': place.building.name if place and place.building else None,
                 'room': place.place_name if place else None,
+                'is_shared': place.is_shared if place else False,
                 'category': complaint.category.name if complaint.category else None,
                 'priority': complaint.priority,
                 'worker': {
@@ -1456,6 +1469,7 @@ class WorkerReportView(APIView):
                     'category': c.category.name if c.category else None,
                     'building': c.place.building.name if c.place and c.place.building else None,
                     'room': c.place.place_name if c.place else None,
+                    'is_shared': c.place.is_shared if c.place else False,
                     'started_at': c.started_at,
                     'finished_at': c.finished_at,
                     'duration_minutes': duration_minutes,
