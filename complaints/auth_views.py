@@ -29,6 +29,17 @@ def _get_tokens_for_user(user):
     }
 
 
+def _user_role_name(user):
+    """The role_name claim for auth responses — the client maps it to a route.
+
+    No UI path ever lives server-side (resolved call #22); this is the single
+    place that reads it for the token-bearing responses."""
+    profile = getattr(user, 'profile', None)
+    if profile and profile.role:
+        return profile.role.role_name
+    return None
+
+
 def _set_refresh_cookie(response, refresh_token):
     secure = not settings.DEBUG
     response.set_cookie(
@@ -90,7 +101,10 @@ class LoginView(APIView):
             )
 
         tokens = _get_tokens_for_user(user)
-        response = Response({'access': tokens['access']}, status=status.HTTP_200_OK)
+        response = Response(
+            {'access': tokens['access'], 'role': _user_role_name(user)},
+            status=status.HTTP_200_OK,
+        )
         _set_refresh_cookie(response, tokens['refresh'])
         return response
 
@@ -198,7 +212,8 @@ class RegisterView(APIView):
 
         tokens = _get_tokens_for_user(user)
         response = Response(
-            {'access': tokens['access'], 'detail': 'Registration successful'},
+            {'access': tokens['access'], 'detail': 'Registration successful',
+             'role': _user_role_name(user)},
             status=status.HTTP_201_CREATED,
         )
         _set_refresh_cookie(response, tokens['refresh'])
@@ -440,7 +455,8 @@ class VerifyEmailView(APIView):
 
         tokens = _get_tokens_for_user(user)
         response = Response(
-            {'access': tokens['access'], 'detail': 'Email verified successfully'},
+            {'access': tokens['access'], 'detail': 'Email verified successfully',
+             'role': _user_role_name(user)},
             status=status.HTTP_200_OK,
         )
         _set_refresh_cookie(response, tokens['refresh'])
