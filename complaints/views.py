@@ -1268,6 +1268,24 @@ class WorkerInviteView(APIView):
         return Response({'invite_token': str(token.token)}, status=status.HTTP_201_CREATED)
 
 
+class WorkerUnlinkView(APIView):
+    '''Sever the account link on a worker (set account=None). The account
+    itself is untouched — only the Worker→UserProfile bond is broken, so the
+    live link check on the worker endpoints (`getattr(actor, 'worker', None)`)
+    403s at the next request instead of letting the old session ride the
+    refresh cookie for up to 7 days. Reversible: the admin can re-provision.'''
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def post(self, request, worker_id):
+        try:
+            worker = Worker.objects.get(worker_id=worker_id)
+        except Worker.DoesNotExist:
+            return Response({'error': 'Worker not found'}, status=status.HTTP_404_NOT_FOUND)
+        worker.account = None
+        worker.save(update_fields=['account'])
+        return Response(WorkerSerializer(worker).data, status=status.HTTP_200_OK)
+
+
 class CompletedReportView(APIView):
     '''Admin report of completed work: resolved complaints with an assigned
     worker, filtered by resolved_at within [date_from, date_to] (inclusive on
