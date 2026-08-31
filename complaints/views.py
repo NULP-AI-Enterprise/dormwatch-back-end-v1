@@ -2,7 +2,7 @@ from datetime import timedelta
 import os
 
 from django.core.files.base import File
-from django.db.models import BooleanField, Case, Value, When
+from django.db.models import BooleanField, Case, Value, When, Prefetch
 from django.db.models import F, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -11,8 +11,9 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from django.db import IntegrityError
 from .models import (
-    Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory,
-    Role, Notification, PendingTransitionNotice, Worker, Announcement, InviteToken,
+    Complaint, ComplaintEvent, UserProfile, Comment, DormitoryBuilding, Place,
+    ComplaintCategory, Role, Notification, PendingTransitionNotice, Worker,
+    Announcement, InviteToken,
 )
 from .serializers import (
     ComplaintSerializer, ComplaintCreateSerializer, PublicComplaintSerializer,
@@ -1332,6 +1333,172 @@ class CompletedReportView(APIView):
             })
 
         return Response(rows, status=status.HTTP_200_OK)
+
+
+class WorkerReportView(APIView):
+    '''Per-worker resource-tracking report. For every worker with completed
+    jobs (a complaint whose `finished_at` is set), returns: jobs count,
+    **per-job duration** (`started_at` → `finished_at`, shown per job — never
+    summed into person-hours: overlapping jobs would double-count and breaks
+    would count as labor), average resolution time measured on `resolved_at`
+    (the acceptance moment — distinct from `finished_at`, which powers the
+    durations), on-time vs overdue, and **rejection rate** (denominator:
+    completed jobs — `finished_at` set — counting jobs later marked Не
+    прийнято, i.e. не прийнято ÷ finished). Mid-job reassignments split
+    durations per assignment segment via step01's lifecycle event log — the
+    finishing worker is not charged the previous worker's elapsed time. Sagas
+    roll up under `root` (step04) so a re-filed chain reports as one story.
+
+    Data-quality caveats are returned alongside the numbers: timestamps
+    auto-populate only for panel users; printout workers' stamps come from the
+    commandant's discipline — durations are not comparable across the two
+    populations without noting the bias. Complaints parked in На перевірці
+    inflate resolution time until someone finalizes them, so the report shows
+    the unfinalized-review count next to the averages.'''
+
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        # Only workers who have at least one completed job (finished_at set).
+        # A "job" is a complaint whose work was finished; status may be review /
+        # resolved / not_accepted (all terminal-on-the-worker-side states).
+        finishedComplaints = (
+            Complaint.objects
+            .filter(finished_at__isnull=False, worker__isnull=False)
+            .select_related('category', 'place__building', 'worker', 'root')
+            .prefetch_related(
+                Prefetch(
+                    'events',
+                    queryset=ComplaintEvent.objects.filter(
+                        action__in=['assigned', 'reassigned', 'unassigned'],
+                    ).order_by('created_at', 'event_id'),
+                ),
+            )
+            .order_by('worker_id', '-finished_at')
+        )
+
+        # Group complaints by worker while preserving per-complaint detail.
+        by_worker = {}
+        for c in finishedComplaints:
+            wid = c.worker_id
+            if wid not in by_worker:
+                by_worker[wid] = {
+                    'worker': c.worker,
+                    'jobs': [],
+                }
+            by_worker[wid]['jobs'].append(c)
+
+        report = []
+        for wid in sorted(by_worker, key=lambda k: by_worker[k]['worker'].full_name):
+            entry = by_worker[wid]
+            worker = entry['worker']
+
+            jobs_data = []
+            finished_count = 0
+            not_accepted_count = 0
+            on_time_count = 0
+            overdue_count = 0
+            resolution_minutes = []  # resolved_at - created_at, per resolved job
+            saga_roots = set()
+
+            for c in entry['jobs']:
+                finished_count += 1
+
+                # Rejection-rate attribution: a completed job later marked
+                # Не прийнято counts against the worker who finished it. The
+                # complaint.worker FK is the assignee at finish time, which is
+                # the worker this report row belongs to.
+                if c.status == 'not_accepted':
+                    not_accepted_count += 1
+
+                # On-time vs overdue: finished_at against the deadline. Jobs
+                # without a deadline are counted separately (no_deadline).
+                if c.deadline is not None:
+                    if c.finished_at <= c.deadline:
+                        on_time_count += 1
+                    else:
+                        overdue_count += 1
+
+                # Resolution time on resolved_at (acceptance moment), measured
+                # from creation. Distinct from finished_at (which powers the
+                # per-job durations below). Only resolved complaints have it.
+                if c.resolved_at is not None:
+                    delta = c.resolved_at - c.created_at
+                    resolution_minutes.append(delta.total_seconds() / 60.0)
+
+                # Per-job duration: started_at → finished_at. Mid-job
+                # reassignments split the span per assignment segment via the
+                # event log — the finishing worker is charged only from the
+                # last (re)assignment that put the work on them.
+                duration_minutes = None
+                segment_start = c.started_at
+                if c.started_at is not None:
+                    # Walk assignment events in order; the last one that
+                    # (re)assigned a worker before/at finish bounds this
+                    # worker's segment.
+                    for ev in c.events.all():
+                        if ev.action in ('assigned', 'reassigned'):
+                            if ev.created_at and ev.created_at > c.started_at:
+                                segment_start = ev.created_at
+                    if segment_start is not None and c.finished_at is not None:
+                        span = c.finished_at - segment_start
+                        duration_minutes = span.total_seconds() / 60.0
+
+                # Saga roll-up: follow-up chains share root, so a re-filed
+                # chain reports as one story. Track roots for grouping.
+                root_id = c.root_id
+                if root_id is not None:
+                    saga_roots.add(root_id)
+
+                jobs_data.append({
+                    'complaint_id': c.complaint_id,
+                    'title': c.title,
+                    'category': c.category.name if c.category else None,
+                    'building': c.place.building.name if c.place and c.place.building else None,
+                    'room': c.place.place_name if c.place else None,
+                    'started_at': c.started_at,
+                    'finished_at': c.finished_at,
+                    'duration_minutes': duration_minutes,
+                    'deadline': c.deadline,
+                    'resolved_at': c.resolved_at,
+                    'status': c.status,
+                    'root': root_id,
+                    'root_title': c.root.title if c.root else None,
+                    'is_not_accepted': c.status == 'not_accepted',
+                })
+
+            avg_resolution = (
+                sum(resolution_minutes) / len(resolution_minutes)
+                if resolution_minutes else None
+            )
+
+            report.append({
+                'worker_id': worker.worker_id,
+                'full_name': worker.full_name,
+                'company': worker.company,
+                'phone': worker.phone,
+                'has_account': worker.account_id is not None,
+                'jobs_count': finished_count,
+                'on_time': on_time_count,
+                'overdue': overdue_count,
+                'rejection_count': not_accepted_count,
+                'rejection_rate': (
+                    not_accepted_count / finished_count if finished_count else 0.0
+                ),
+                'avg_resolution_minutes': avg_resolution,
+                'saga_count': len(saga_roots),
+                'jobs': jobs_data,
+            })
+
+        caveats = [
+            'Тчасові мітки (started_at / finished_at) автоматично заповнюються лише для працівників із панелі. У паперових працівників мітки походять від дисципліни коменданта — не порівнюйте тривалості без урахування цього зміщення.',
+            'Звернення, що залишились у статусі «На перевірці», не мають resolved_at — тому не входять у середній час вирішення. Їх кількість вказана окремо.',
+        ]
+
+        return Response({
+            'workers': report,
+            'caveats': caveats,
+        }, status=status.HTTP_200_OK)
 
 
 class NotificationListView(APIView):

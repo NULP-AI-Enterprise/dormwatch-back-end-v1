@@ -53,6 +53,7 @@ urlpatterns = [
     path('admin/buildings/<int:building_id>/', views.AdminBuildingDetailView.as_view(), name='admin-building-detail'),
     path('admin/places/<int:place_id>/', views.AdminPlaceDetailView.as_view(), name='admin-place-detail'),
     path('admin/reports/completed/', views.CompletedReportView.as_view(), name='admin-reports-completed'),
+    path('admin/reports/workers/', views.WorkerReportView.as_view(), name='admin-reports-workers'),
     path('notifications/', views.NotificationListView.as_view(), name='notifications-list'),
     path('notifications/<int:notification_id>/', views.NotificationMarkReadView.as_view(), name='notification-mark-read'),
     path('notifications/mark-all-read/', views.NotificationMarkAllReadView.as_view(), name='notifications-mark-all-read'),
