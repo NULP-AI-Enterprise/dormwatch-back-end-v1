@@ -528,7 +528,7 @@ class UserComplaintView(APIView):
                 place_id_int = int(place_id)
             except (TypeError, ValueError):
                 return Response(
-                    {'place': 'Можна обрати лише кімнату вашого гуртожитку'},
+                    {'place': 'Можна обрати лише місце у вашому гуртожитку'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             target_place = Place.objects.filter(
@@ -536,7 +536,7 @@ class UserComplaintView(APIView):
             ).first()
             if target_place is None:
                 return Response(
-                    {'place': 'Можна обрати лише кімнату вашого гуртожитку'},
+                    {'place': 'Можна обрати лише місце у вашому гуртожитку'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         elif user_profile.place:
@@ -1013,7 +1013,7 @@ class ComplaintRefileView(APIView):
 
         if source.status not in TERMINAL_STATUSES:
             return Response(
-                {'status': 'Повторне звернення можна подати лише по завершеному'},
+                {'status': 'Повторне звернення можна подати лише після завершення попереднього'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -1505,7 +1505,7 @@ class WorkerReportView(APIView):
             })
 
         caveats = [
-            'Тчасові мітки (started_at / finished_at) автоматично заповнюються лише для працівників із панелі. У паперових працівників мітки походять від дисципліни коменданта — не порівнюйте тривалості без урахування цього зміщення.',
+            'Часові мітки (started_at / finished_at) автоматично заповнюються лише для працівників із панелі. У паперових працівників мітки походять від дисципліни коменданта — не порівнюйте тривалості без урахування цього зміщення.',
             'Звернення, що залишились у статусі «На перевірці», не мають resolved_at — тому не входять у середній час вирішення. Їх кількість вказана окремо.',
         ]
 
