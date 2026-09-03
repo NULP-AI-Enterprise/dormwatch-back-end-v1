@@ -9,11 +9,11 @@ from django.utils.dateparse import parse_date
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from .models import (
     Complaint, ComplaintEvent, UserProfile, Comment, DormitoryBuilding, Place,
     ComplaintCategory, Role, Notification, PendingTransitionNotice, Worker,
-    Announcement, InviteToken,
+    Announcement, InviteToken, COMPLAINT_STATUS,
 )
 from .serializers import (
     ComplaintSerializer, ComplaintCreateSerializer, PublicComplaintSerializer,
@@ -25,6 +25,7 @@ from .serializers import (
     AdminUpdateUserSerializer, RoleSerializer, AnnouncementSerializer,
 )
 from .image_utils import process_complaint_photo
+from .worker_report_util import finishing_worker
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
@@ -72,16 +73,8 @@ TERMINAL_STATUSES = {'resolved', 'rejected', 'not_accepted', 'withdrawn'}
 # worker panel's undo window (step 07). Swept lazily at notification read time.
 TRANSITION_UNDO_WINDOW = timedelta(seconds=30)
 
-STATUS_LABELS = {
-    'pending': 'Очікує',
-    'approved': 'Схвалено',
-    'in_progress': 'В роботі',
-    'review': 'На перевірці',
-    'resolved': 'Вирішено',
-    'rejected': 'Відхилено',
-    'not_accepted': 'Не прийнято',
-    'withdrawn': 'Скасовано',
-}
+# Labels are the model's canonical vocabulary — one table, not a re-type.
+STATUS_LABELS = dict(COMPLAINT_STATUS)
 
 
 def _get_profile(request):
@@ -148,7 +141,7 @@ def _stage_transition_notices(complaint, actor=None):
     else:
         messages = {
             'pending': f"Статус звернення «{complaint.title}»: {label}",
-            'approved': f"Звернення «{complaint.title}» схвалено та передано в роботу.",
+            'approved': f"Звернення «{complaint.title}» схвалено.",
             'in_progress': f"Роботи за «{complaint.title}» почато.",
             'review': f"Роботи за «{complaint.title}» виконано — на перевірці.",
             'resolved': f"Звернення «{complaint.title}» вирішено.",
@@ -169,17 +162,19 @@ def _stage_transition_notices(complaint, actor=None):
 def _sweep_transition_notices():
     '''Materialize staged transition notices whose undo window has passed into
     real notifications. Called lazily at the top of the notifications list
-    endpoint (no scheduler in this project).'''
+    endpoint (no scheduler in this project). Atomic: the materialize + delete
+    are one transaction, so a crash between them can't re-ping next sweep.'''
     due = list(PendingTransitionNotice.objects.filter(ready_at__lte=timezone.now()))
     if not due:
         return
-    Notification.objects.bulk_create([
-        Notification(
-            user=n.recipient, title=n.title, message=n.message, complaint=n.complaint,
-        )
-        for n in due
-    ])
-    PendingTransitionNotice.objects.filter(notice_id__in=[n.notice_id for n in due]).delete()
+    with transaction.atomic():
+        Notification.objects.bulk_create([
+            Notification(
+                user=n.recipient, title=n.title, message=n.message, complaint=n.complaint,
+            )
+            for n in due
+        ])
+        PendingTransitionNotice.objects.filter(notice_id__in=[n.notice_id for n in due]).delete()
 
 
 OVERDUE_NOTICE_TITLE = 'Прострочений дедлайн'
@@ -188,21 +183,23 @@ OVERDUE_NOTICE_TITLE = 'Прострочений дедлайн'
 def _sweep_overdue_deadlines():
     '''Deadline notifications: admins hear once per overdue complaint ("В
     роботі" past its deadline). Lazy like the transition sweep — no scheduler;
-    deduped by the notice title on the complaint so re-reads never re-ping.'''
+    deduped by the notice title on the complaint so re-reads never re-ping.
+    Atomic so a partial sweep can't fire half a batch on the next read.'''
     overdue = Complaint.objects.filter(
         status='in_progress', deadline__lt=timezone.now(), archived=False,
     )
-    for complaint in overdue:
-        if Notification.objects.filter(complaint=complaint, title=OVERDUE_NOTICE_TITLE).exists():
-            continue
-        deadline_label = timezone.localtime(complaint.deadline).strftime('%d.%m.%Y %H:%M')
-        for admin in _admin_profiles():
-            Notification.objects.create(
-                user=admin,
-                title=OVERDUE_NOTICE_TITLE,
-                message=f"Звернення «{complaint.title}» прострочило дедлайн ({deadline_label}).",
-                complaint=complaint,
-            )
+    with transaction.atomic():
+        for complaint in overdue:
+            if Notification.objects.filter(complaint=complaint, title=OVERDUE_NOTICE_TITLE).exists():
+                continue
+            deadline_label = timezone.localtime(complaint.deadline).strftime('%d.%m.%Y %H:%M')
+            for admin in _admin_profiles():
+                Notification.objects.create(
+                    user=admin,
+                    title=OVERDUE_NOTICE_TITLE,
+                    message=f"Звернення «{complaint.title}» прострочило дедлайн ({deadline_label}).",
+                    complaint=complaint,
+                )
 
 
 def _notify_worker_accounts(worker_ids, title, message, complaint):
@@ -215,14 +212,15 @@ def _notify_worker_accounts(worker_ids, title, message, complaint):
 
 def _apply_assignment_change(complaint, new_worker, actor):
     '''Write assignment changes with honest per-worker attribution: append the
-    event (assigned/unassigned/reassigned) and notify the dropped/new worker
+    event (assigned/unassigned/reassigned), tagged with the worker the event
+    brought onto or took off the complaint, and notify the dropped/new worker
     accounts. Returns nothing; caller persists via save().'''
     old_worker = complaint.worker
     complaint.worker = new_worker
     if old_worker == new_worker:
         return
     if new_worker and not old_worker:
-        complaint.log_event('assigned', actor=actor)
+        complaint.log_event('assigned', actor=actor, worker=new_worker)
         _notify_worker_accounts(
             [new_worker.worker_id],
             "Нове завдання",
@@ -230,7 +228,7 @@ def _apply_assignment_change(complaint, new_worker, actor):
             complaint,
         )
     elif old_worker and not new_worker:
-        complaint.log_event('unassigned', actor=actor)
+        complaint.log_event('unassigned', actor=actor, worker=old_worker)
         _notify_worker_accounts(
             [old_worker.worker_id],
             "Завдання знято",
@@ -238,7 +236,7 @@ def _apply_assignment_change(complaint, new_worker, actor):
             complaint,
         )
     elif old_worker and new_worker:
-        complaint.log_event('reassigned', actor=actor)
+        complaint.log_event('reassigned', actor=actor, worker=new_worker)
         _notify_worker_accounts(
             [old_worker.worker_id],
             "Завдання знято",
@@ -1081,7 +1079,9 @@ class WorkerComplaintListView(APIView):
             complaints = (
                 complaints
                 .exclude(status__in=TERMINAL_STATUSES)
-                .order_by('deadline')
+                # No-deadline jobs sort last — a worker's queue reads by
+                # "next due", and NULLs-first would bury past-due work.
+                .order_by(F('deadline').asc(nulls_last=True))
             )
         serializer = WorkerComplaintSerializer(complaints, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1384,19 +1384,22 @@ class WorkerReportView(APIView):
                     'events',
                     queryset=ComplaintEvent.objects.filter(
                         action__in=['assigned', 'reassigned', 'unassigned'],
-                    ).order_by('created_at', 'event_id'),
+                    ).select_related('worker').order_by('created_at', 'event_id'),
                 ),
             )
             .order_by('worker_id', '-finished_at')
         )
 
-        # Group complaints by worker while preserving per-complaint detail.
+        # Group complaints by the worker who actually finished each job — read
+        # from the event log so a post-finish reassign can't move a finished
+        # job onto a worker who never touched it.
         by_worker = {}
         for c in finishedComplaints:
-            wid = c.worker_id
+            worker = finishing_worker(c)
+            wid = worker.worker_id
             if wid not in by_worker:
                 by_worker[wid] = {
-                    'worker': c.worker,
+                    'worker': worker,
                     'jobs': [],
                 }
             by_worker[wid]['jobs'].append(c)
@@ -1418,9 +1421,8 @@ class WorkerReportView(APIView):
                 finished_count += 1
 
                 # Rejection-rate attribution: a completed job later marked
-                # Не прийнято counts against the worker who finished it. The
-                # complaint.worker FK is the assignee at finish time, which is
-                # the worker this report row belongs to.
+                # Не прийнято counts against the worker who finished it — the
+                # worker this report row was grouped under.
                 if c.status == 'not_accepted':
                     not_accepted_count += 1
 
@@ -1448,10 +1450,13 @@ class WorkerReportView(APIView):
                 if c.started_at is not None:
                     # Walk assignment events in order; the last one that
                     # (re)assigned a worker before/at finish bounds this
-                    # worker's segment.
+                    # worker's segment. Events after the finish stamp are
+                    # post-hoc bookkeeping — they never shorten a duration.
                     for ev in c.events.all():
                         if ev.action in ('assigned', 'reassigned'):
-                            if ev.created_at and ev.created_at > c.started_at:
+                            if ev.created_at and c.finished_at \
+                                    and ev.created_at <= c.finished_at \
+                                    and ev.created_at > c.started_at:
                                 segment_start = ev.created_at
                     if segment_start is not None and c.finished_at is not None:
                         span = c.finished_at - segment_start

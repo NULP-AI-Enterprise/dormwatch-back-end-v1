@@ -214,11 +214,15 @@ class Complaint(models.Model):
             setattr(self, old_stamp, None)
         self.save(update_fields=['status', 'started_at', 'finished_at', 'resolved_at'])
 
-    def log_event(self, action, actor=None):
+    def log_event(self, action, actor=None, worker=None):
         '''Append an entry to the lifecycle event log (assignment changes,
-        stamps, undos, archiving). Read surface: history line on the
-        complaint panel.'''
-        return ComplaintEvent.objects.create(complaint=self, actor=actor, action=action)
+        stamps, undos, archiving). `worker` records the worker an assignment
+        event brought onto (assigned/reassigned) or took off (unassigned) the
+        complaint — the log's per-worker attribution. Read surface: history
+        line on the complaint panel and the per-worker report.'''
+        return ComplaintEvent.objects.create(
+            complaint=self, actor=actor, action=action, worker=worker,
+        )
 
 
 class ComplaintEvent(models.Model):
@@ -241,6 +245,10 @@ class ComplaintEvent(models.Model):
     complaint = models.ForeignKey(Complaint, on_delete=models.CASCADE, related_name='events')
     actor = models.ForeignKey(UserProfile, on_delete=models.SET_NULL, null=True, blank=True, related_name='complaint_events')
     action = models.CharField(max_length=50, choices=COMPLAINT_EVENT_ACTION)
+    worker = models.ForeignKey(
+        'Worker', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='complaint_events',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
