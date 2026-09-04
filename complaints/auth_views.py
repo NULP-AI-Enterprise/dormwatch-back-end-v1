@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 
 from django.utils import timezone
-from .models import UserProfile, DormitoryBuilding, Place, Role, InviteToken, EmailVerificationCode, PasswordResetCode
+from .models import UserProfile, DormitoryBuilding, Place, Role, InviteToken, Worker, EmailVerificationCode, PasswordResetCode
 from .serializers import RegisterSerializer, DormitoryBuildingSerializer, PlaceSerializer
 from .email_utils import send_verification_email, send_password_reset_email
 
@@ -27,6 +27,17 @@ def _get_tokens_for_user(user):
         'access': str(token.access_token),
         'refresh': str(token),
     }
+
+
+def _user_role_name(user):
+    """The role_name claim for auth responses — the client maps it to a route.
+
+    No UI path ever lives server-side (resolved call #22); this is the single
+    place that reads it for the token-bearing responses."""
+    profile = getattr(user, 'profile', None)
+    if profile and profile.role:
+        return profile.role.role_name
+    return None
 
 
 def _set_refresh_cookie(response, refresh_token):
@@ -90,7 +101,10 @@ class LoginView(APIView):
             )
 
         tokens = _get_tokens_for_user(user)
-        response = Response({'access': tokens['access']}, status=status.HTTP_200_OK)
+        response = Response(
+            {'access': tokens['access'], 'role': _user_role_name(user)},
+            status=status.HTTP_200_OK,
+        )
         _set_refresh_cookie(response, tokens['refresh'])
         return response
 
@@ -134,6 +148,10 @@ class RegisterView(APIView):
             else:
                 role, _ = Role.objects.get_or_create(role_name='student')
 
+            is_worker_invite = bool(
+                invite and invite.role and invite.role.role_name.lower() == 'worker'
+            )
+
             place = serializer.validated_data.get('place_id')
             building = serializer.validated_data.get('building_id')
 
@@ -142,6 +160,12 @@ class RegisterView(APIView):
                     building = invite.building_id
                 if invite.place_id:
                     place = invite.place_id
+
+            # A worker account holds no residence — ignore whatever a payload
+            # might claim for one.
+            if is_worker_invite:
+                place = None
+                building = None
 
             # Building is a first-class profile field, independent of room, so a
             # user can register with a building but no room yet. If a room was
@@ -154,7 +178,7 @@ class RegisterView(APIView):
                     .first()
                 )
 
-            UserProfile.objects.create(
+            profile = UserProfile.objects.create(
                 user=user,
                 first_name=serializer.validated_data.get('first_name', ''),
                 last_name=serializer.validated_data.get('last_name', ''),
@@ -165,7 +189,14 @@ class RegisterView(APIView):
                 is_email_verified=is_auto_verified,
             )
 
-        if not is_auto_verified:
+            # Worker invite redemption completes provisioning: link the new
+            # account 1:1 from the Worker row (the live link gates worker
+            # endpoints; unlinking revokes access).
+            if is_worker_invite and invite.worker_id:
+                Worker.objects.filter(worker_id=invite.worker_id, account__isnull=True)\
+                    .update(account=profile)
+
+        if not is_first_user:
             try:
                 send_verification_email(user)
             except Exception as e:
@@ -181,7 +212,8 @@ class RegisterView(APIView):
 
         tokens = _get_tokens_for_user(user)
         response = Response(
-            {'access': tokens['access'], 'detail': 'Registration successful'},
+            {'access': tokens['access'], 'detail': 'Registration successful',
+             'role': _user_role_name(user)},
             status=status.HTTP_201_CREATED,
         )
         _set_refresh_cookie(response, tokens['refresh'])
@@ -423,7 +455,8 @@ class VerifyEmailView(APIView):
 
         tokens = _get_tokens_for_user(user)
         response = Response(
-            {'access': tokens['access'], 'detail': 'Email verified successfully'},
+            {'access': tokens['access'], 'detail': 'Email verified successfully',
+             'role': _user_role_name(user)},
             status=status.HTTP_200_OK,
         )
         _set_refresh_cookie(response, tokens['refresh'])

@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker, Announcement
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Notification, Worker, Announcement, ComplaintEvent, InviteToken, COMPLAINT_STATUS, COMPLAINT_PRIORITY
 from .image_utils import process_complaint_photo
 
 
@@ -97,14 +97,82 @@ class UserComplaintSerializer(serializers.ModelSerializer):
         model = UserProfile
         fields = ['user', 'first_name', 'last_name', 'photo_url']
 
+
+class WorkerSerializer(serializers.ModelSerializer):
+    has_account = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Worker
+        fields = ['worker_id', 'full_name', 'company', 'phone', 'has_account']
+
+    def get_has_account(self, obj):
+        return obj.account_id is not None
+
+class ComplaintEventSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ComplaintEvent
+        fields = ['event_id', 'action', 'actor', 'actor_name', 'created_at']
+
+    def get_actor_name(self, obj):
+        if obj.actor is None:
+            return None
+        return f"{obj.actor.first_name} {obj.actor.last_name}".strip() or None
+
+
+# Public board serializer: rooms/photos and the author identity are hidden
+# from everyone but staff — the feed shows what happened, never who/where
+# exactly lives behind it.
+class PublicComplaintSerializer(serializers.ModelSerializer):
+    category = CategorySerializer(read_only=True)
+    building_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Complaint
+        fields = ['complaint_id', 'title', 'description', 'category', 'status',
+                  'priority', 'created_at', 'building_name']
+
+    def get_building_name(self, obj):
+        place = obj.place
+        return place.building.name if place and place.building else None
+
+
+# Owner/admin read shape: full lifecycle + assignment + re-file chain links.
 class ComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     place = PlaceSerializer(read_only=True)
     user = UserComplaintSerializer(read_only=True)
+    worker = WorkerSerializer(read_only=True)
+    # Derived, never stored: the views.annotate_is_overdue annotation
+    # (`overdue_flag`) when present (lists), the model property otherwise
+    # (single objects).
+    is_overdue = serializers.SerializerMethodField()
+
     class Meta:
         model = Complaint
-        fields = ['complaint_id', 'user', 'title', 'description', 'category', 'status', 'photo_url', 'thumbnail', 'created_at', 'place', 'priority', 'rejection_reason']
+        fields = [
+            'complaint_id', 'user', 'title', 'description', 'category', 'status',
+            'photo_url', 'thumbnail', 'created_at', 'place', 'priority',
+            'resolved_at',
+            'worker', 'deadline', 'started_at', 'finished_at', 'work_note',
+            'rejection_reason', 'rework_reason',
+            'follow_up_of', 'root', 'is_overdue',
+        ]
         read_only_fields = ['complaint_id', 'created_at', 'user', 'status']
+
+    def get_is_overdue(self, obj):
+        flagged = getattr(obj, 'overdue_flag', None)
+        if flagged is not None:
+            return flagged
+        return bool(obj.is_overdue)
+
+
+# Resident create whitelist: a resident payload has no status/priority/worker.
+class ComplaintCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Complaint
+        fields = ['title', 'description', 'photo_url']
 
     def create(self, validated_data):
         uploaded_file = validated_data.pop('photo_url', None)
@@ -115,17 +183,54 @@ class ComplaintSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class WorkerSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Worker
-        fields = ['worker_id', 'full_name', 'company', 'phone']
+# Admin detail: everything above plus soft-delete bookkeeping, the event log,
+# and the follow-up chain children.
+class AdminComplaintDetailSerializer(ComplaintSerializer):
+    events = ComplaintEventSerializer(many=True, read_only=True)
+
+    class Meta(ComplaintSerializer.Meta):
+        fields = ComplaintSerializer.Meta.fields + [
+            'archived', 'archived_by', 'archived_at', 'events',
+        ]
 
 
-class TicketSerializer(serializers.ModelSerializer):
-    worker = WorkerSerializer(read_only=True)
+# Admin PATCH whitelist. The allowed-field list IS the rule: assignment,
+# deadline, triage status moves, rejection reason, priority. Anything else a
+# client sends here is ignored, and other endpoints simply don't accept these
+# fields for their roles.
+class AdminComplaintUpdateSerializer(serializers.Serializer):
+    worker_id = serializers.IntegerField(required=False, allow_null=True)
+    deadline = serializers.DateTimeField(required=False, allow_null=True)
+    status = serializers.ChoiceField(choices=[s for s, _ in COMPLAINT_STATUS], required=False)
+    rejection_reason = serializers.CharField(required=False, allow_blank=True)
+    priority = serializers.ChoiceField(choices=[p for p, _ in COMPLAINT_PRIORITY], required=False)
+
+
+# Worker-scoped read: job context only (what to fix, where, by when). No
+# resident identity, no dorm-wide fields. Chain links + created_at let the
+# panel cite "Повторне до №N" and order a saga; stamps power the history.
+class WorkerComplaintSerializer(serializers.ModelSerializer):
+    category = CategorySerializer(read_only=True)
+    place = PlaceSerializer(read_only=True)
+
     class Meta:
-        model = Ticket
-        fields = ['ticket_id', 'worker', 'complaint', 'deadline']
+        model = Complaint
+        fields = ['complaint_id', 'title', 'description', 'category', 'status',
+                  'priority', 'place', 'photo_url', 'thumbnail',
+                  'deadline', 'started_at', 'finished_at', 'work_note',
+                  'follow_up_of', 'root', 'created_at']
+
+
+# Worker PATCH whitelist: stamps via explicit action verbs + optional note.
+class WorkerStampSerializer(serializers.Serializer):
+    ACTION_CHOICES = [
+        ('start', 'Взято в роботу'),
+        ('finish', 'Виконано'),
+        ('start_undo', 'Скасовано початок робіт'),
+        ('finish_undo', 'Скасовано виконання'),
+    ]
+    action = serializers.ChoiceField(choices=ACTION_CHOICES)
+    note = serializers.CharField(required=False, allow_blank=True)
 
 
 class UpdateUserRoleSerializer(serializers.ModelSerializer):
@@ -169,14 +274,6 @@ class AdminUpdateUserSerializer(serializers.ModelSerializer):
         return data
 
 
-class ComplaintStatusSerializer(serializers.ModelSerializer):
-    category_name = serializers.CharField(write_only=True, required=False)
-
-    class Meta:
-        model = Complaint
-        fields = ['status', 'priority', 'title', 'description', 'category_name', 'rejection_reason']
-
-    
 class CommentSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     author_is_admin = serializers.SerializerMethodField()
@@ -202,19 +299,23 @@ class RegisterSerializer(serializers.Serializer):
     building_id = serializers.IntegerField(required=False, allow_null=True)
     invite_token = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
-    def validate_email(self, value):
-        from .models import InviteToken
+    def _get_invite(self, token):
+        """The valid, unused InviteToken for `token`, or None."""
+        if not token:
+            return None
+        return InviteToken.objects.filter(token=token, is_used=False).first()
 
+    def validate_email(self, value):
         email = value.strip().lower()
         domain = email.split('@')[-1] if '@' in email else ''
         allowed = [d.strip().lower() for d in settings.ALLOWED_EMAIL_DOMAINS]
         invite_token = self.initial_data.get('invite_token')
-        
-        if invite_token:
-            if not InviteToken.objects.filter(token=invite_token, is_used=False).exists():
-                raise serializers.ValidationError('Недійсне або вже використане посилання-запрошення')
 
-        if domain not in allowed and not invite_token:
+        invite = self._get_invite(invite_token)
+        if invite_token and not invite:
+            raise serializers.ValidationError('Недійсне або вже використане посилання-запрошення')
+
+        if domain not in allowed and not invite:
             raise serializers.ValidationError(
                 f'Email domain @{domain} is not authorized'
             )
@@ -225,21 +326,26 @@ class RegisterSerializer(serializers.Serializer):
     def validate(self, data):
         if data.get('password') != data.get('confirm_password'):
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match'})
-        invite_token = data.get('invite_token')
-        # Building is required for normal student registration once any building exists.
-        # For invite registration or empty DB bootstrap, building stays optional.
-        if not invite_token:
-            building_id = data.get('building_id')
-            if DormitoryBuilding.objects.exists() and not building_id:
+        # Building is required once any building exists. On an empty DB (first
+        # user / admin bootstrap) there is nothing to pick, so it stays optional.
+        # A worker invite carries no residence either — workers are not residents.
+        building_id = data.get('building_id')
+        if DormitoryBuilding.objects.exists() and not building_id:
+            invite = self._get_invite(data.get('invite_token'))
+            is_worker_invite = bool(invite and invite.role
+                                    and invite.role.role_name.lower() == 'worker')
+            if not is_worker_invite:
                 raise serializers.ValidationError({'building_id': 'Building selection is required'})
-            if building_id and not DormitoryBuilding.objects.filter(building_id=building_id).exists():
-                raise serializers.ValidationError({'building_id': 'Building not found'})
-            place_id = data.get('place_id')
-            if place_id:
-                place = Place.objects.filter(place_id=place_id).first()
-                if place is None:
-                    raise serializers.ValidationError({'place_id': 'Room not found'})
-                _validate_assignable_place(place)
+        if building_id and not DormitoryBuilding.objects.filter(building_id=building_id).exists():
+            raise serializers.ValidationError({'building_id': 'Building not found'})
+        # A new user has no existing profile, so occupancy is the raw count.
+        # Same rule as admin assignment: shared/full/capacity-0 rooms are rejected.
+        place_id = data.get('place_id')
+        if place_id:
+            place = Place.objects.filter(place_id=place_id).first()
+            if place is None:
+                raise serializers.ValidationError({'place_id': 'Room not found'})
+            _validate_assignable_place(place)
         return data
 
     def create(self, validated_data):

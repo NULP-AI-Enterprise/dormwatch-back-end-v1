@@ -59,14 +59,19 @@ docker run -p 8000:80 --env-file .env dormwatch-server
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET/POST | `/api/complaints/` | List/create complaints (admin) |
-| GET/PUT/DELETE | `/api/complaints/<id>/` | Complaint detail (admin) |
-| GET/POST | `/api/me/complaints/` | Current user's complaints |
-| GET/PUT/DELETE | `/api/me/complaints/<id>/` | User's complaint detail |
-| PATCH | `/api/complaints/<id>/counter/` | Upvote a complaint |
+| GET | `/api/complaints/` | Board feed (admin: all; others: anonymized building feed) |
+| GET | `/api/complaints/<id>/` | Complaint detail (role-scoped serializer) |
+| GET/POST | `/api/me/complaints/` | Current user's complaints / create one |
+| GET/PATCH/DELETE | `/api/me/complaints/<id>/` | Own complaint detail (edit/delete only while pending) |
+| POST | `/api/me/complaints/<id>/accept/` | Owner accepts completed work (→ Вирішено) |
+| POST | `/api/me/complaints/<id>/reject/` | Owner rejects with `rework_reason` (→ Не прийнято) |
+| POST | `/api/me/complaints/<id>/withdraw/` | Owner withdraws while pending (→ Скасовано) |
+| POST | `/api/complaints/<id>/refile/` | Re-file a closed complaint (≤1 open follow-up) |
+| GET | `/api/worker/complaints/` | Assigned job list for the signed-in worker |
+| PATCH | `/api/worker/complaints/<id>/` | Worker stamps (start/finish + undos, note) |
 | GET/POST | `/api/complaints/<id>/comments/` | Comments on a complaint |
 | DELETE | `/api/comments/<id>/` | Delete a comment |
-| PATCH | `/api/admin/complaints/<id>/status/` | Change complaint status (admin) |
+| GET/PATCH/DELETE | `/api/admin/complaints/<id>/` | Admin: full record / assignment+transitions / delete-or-archive |
 | PATCH | `/api/admin/users/<id>/set-admin/` | Toggle admin status |
 | GET/PATCH/DELETE | `/api/profile/` | User profile |
 | PATCH | `/api/profile/change-room/` | Update user's room |
