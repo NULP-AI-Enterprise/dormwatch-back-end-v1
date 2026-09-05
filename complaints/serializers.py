@@ -8,9 +8,9 @@ from .image_utils import process_complaint_photo
 def _validate_assignable_place(place, exclude_profile_pk=None):
     """Reject assigning a resident to a room that isn't a valid residence.
 
-    A place is unassignable if it is shared (kitchen/laundry/common вЂ” a complaint
+    A place is unassignable if it is shared (kitchen/laundry/common — a complaint
     location only) or is a private room already at/over capacity. `capacity == 0`
-    means "not configured as a residence", so it is never assignable вЂ” an admin
+    means "not configured as a residence", so it is never assignable — an admin
     must set a real capacity first. `exclude_profile_pk` drops the profile being
     edited from the occupancy count so re-saving a resident already in the room
     (or just changing their role) does not falsely trip the block.
@@ -21,14 +21,14 @@ def _validate_assignable_place(place, exclude_profile_pk=None):
         return
     if place.is_shared:
         raise serializers.ValidationError(
-            {'place_id': 'РљС–РјРЅР°С‚Р° С” СЃРїС–Р»СЊРЅРѕСЋ С– РЅРµ РјРѕР¶Рµ Р±СѓС‚Рё Р¶РёС‚Р»РѕРІРѕСЋ'}
+            {'place_id': 'Кімната є спільною і не може бути житловою'}
         )
     occupancy = UserProfile.objects.filter(place=place)
     if exclude_profile_pk is not None:
         occupancy = occupancy.exclude(pk=exclude_profile_pk)
     if place.capacity == 0 or occupancy.count() >= place.capacity:
         raise serializers.ValidationError(
-            {'place_id': 'РљС–РјРЅР°С‚Р° РїРµСЂРµРїРѕРІРЅРµРЅР° Р°Р±Рѕ РЅРµ С” Р¶РёС‚Р»РѕРІРѕСЋ'}
+            {'place_id': 'Кімната переповнена або не є житловою'}
         )
 
 
@@ -122,7 +122,7 @@ class ComplaintEventSerializer(serializers.ModelSerializer):
 
 
 # Public board serializer: rooms/photos and the author identity are hidden
-# from everyone but staff вЂ” the feed shows what happened, never who/where
+# from everyone but staff — the feed shows what happened, never who/where
 # exactly lives behind it.
 class PublicComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
@@ -216,7 +216,7 @@ class AdminComplaintUpdateSerializer(serializers.Serializer):
 
 # Worker-scoped read: job context only (what to fix, where, by when). No
 # resident identity, no dorm-wide fields. Chain links + created_at let the
-# panel cite "РџРѕРІС‚РѕСЂРЅРµ РґРѕ в„–N" and order a saga; stamps power the history.
+# panel cite "Повторне до №N" and order a saga; stamps power the history.
 class WorkerComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     place = PlaceSerializer(read_only=True)
@@ -232,10 +232,10 @@ class WorkerComplaintSerializer(serializers.ModelSerializer):
 # Worker PATCH whitelist: stamps via explicit action verbs + optional note.
 class WorkerStampSerializer(serializers.Serializer):
     ACTION_CHOICES = [
-        ('start', 'Р’Р·СЏС‚Рѕ РІ СЂРѕР±РѕС‚Сѓ'),
-        ('finish', 'Р’РёРєРѕРЅР°РЅРѕ'),
-        ('start_undo', 'РЎРєР°СЃРѕРІР°РЅРѕ РїРѕС‡Р°С‚РѕРє СЂРѕР±С–С‚'),
-        ('finish_undo', 'РЎРєР°СЃРѕРІР°РЅРѕ РІРёРєРѕРЅР°РЅРЅСЏ'),
+        ('start', 'Взято в роботу'),
+        ('finish', 'Виконано'),
+        ('start_undo', 'Скасовано початок робіт'),
+        ('finish_undo', 'Скасовано виконання'),
     ]
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
     note = serializers.CharField(required=False, allow_blank=True)
@@ -294,7 +294,7 @@ class CommentSerializer(serializers.ModelSerializer):
         return f"{obj.user.first_name} {obj.user.last_name}".strip()
 
     def get_author_is_admin(self, obj):
-        return bool(obj.user.role and obj.user.role.role_name.lower() in ['admin', 'Р°РґРјС–РЅС–СЃС‚СЂР°С‚РѕСЂ'])
+        return bool(obj.user.role and obj.user.role.role_name.lower() in ['admin', 'адміністратор'])
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -321,7 +321,7 @@ class RegisterSerializer(serializers.Serializer):
 
         invite = self._get_invite(invite_token)
         if invite_token and not invite:
-            raise serializers.ValidationError('РќРµРґС–Р№СЃРЅРµ Р°Р±Рѕ РІР¶Рµ РІРёРєРѕСЂРёСЃС‚Р°РЅРµ РїРѕСЃРёР»Р°РЅРЅСЏ-Р·Р°РїСЂРѕС€РµРЅРЅСЏ')
+            raise serializers.ValidationError('Недійсне або вже використане посилання-запрошення')
 
         if domain not in allowed and not invite:
             raise serializers.ValidationError(
@@ -336,7 +336,7 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match'})
         # Building is required once any building exists. On an empty DB (first
         # user / admin bootstrap) there is nothing to pick, so it stays optional.
-        # A worker invite carries no residence either вЂ” workers are not residents.
+        # A worker invite carries no residence either — workers are not residents.
         building_id = data.get('building_id')
         if DormitoryBuilding.objects.exists() and not building_id:
             invite = self._get_invite(data.get('invite_token'))

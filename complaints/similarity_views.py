@@ -14,6 +14,7 @@ class SimilarComplaintsView(views.APIView):
         text = request.query_params.get('text', '')
         category_id = request.query_params.get('category_id')
         building_id = request.query_params.get('building_id')
+        place_id = request.query_params.get('place_id')
 
         # Require at least some text to search
         if not text or len(text) < 5:
@@ -35,7 +36,9 @@ class SimilarComplaintsView(views.APIView):
         )
         if category_id:
             queryset = queryset.filter(category_id=category_id)
-        if building_id:
+        if place_id:
+            queryset = queryset.filter(place_id=place_id)
+        elif building_id:
             queryset = queryset.filter(
                 Q(place__building_id=building_id) | Q(user__building_id=building_id)
             )
