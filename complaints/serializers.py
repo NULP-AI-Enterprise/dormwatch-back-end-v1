@@ -15,7 +15,7 @@ def _validate_assignable_place(place, exclude_profile_pk=None):
     edited from the occupancy count so re-saving a resident already in the room
     (or just changing their role) does not falsely trip the block.
 
-    Raises serializers.ValidationError({'place_id': ...}) → HTTP 400.
+    Raises serializers.ValidationError({'place_id': ...}) в†’ HTTP 400.
     """
     if place is None:
         return
@@ -127,15 +127,19 @@ class ComplaintEventSerializer(serializers.ModelSerializer):
 class PublicComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     building_name = serializers.SerializerMethodField()
+    supporters_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
         fields = ['complaint_id', 'title', 'description', 'category', 'status',
-                  'priority', 'created_at', 'building_name']
+                  'priority', 'created_at', 'building_name', 'supporters_count']
 
     def get_building_name(self, obj):
         place = obj.place
         return place.building.name if place and place.building else None
+
+    def get_supporters_count(self, obj):
+        return obj.supporters.count()
 
 
 # Owner/admin read shape: full lifecycle + assignment + re-file chain links.
@@ -148,6 +152,7 @@ class ComplaintSerializer(serializers.ModelSerializer):
     # (`overdue_flag`) when present (lists), the model property otherwise
     # (single objects).
     is_overdue = serializers.SerializerMethodField()
+    supporters_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
@@ -157,7 +162,7 @@ class ComplaintSerializer(serializers.ModelSerializer):
             'resolved_at',
             'worker', 'deadline', 'started_at', 'finished_at', 'work_note',
             'rejection_reason', 'rework_reason',
-            'follow_up_of', 'root', 'is_overdue',
+            'follow_up_of', 'root', 'is_overdue', 'supporters_count',
         ]
         read_only_fields = ['complaint_id', 'created_at', 'user', 'status']
 
@@ -166,6 +171,9 @@ class ComplaintSerializer(serializers.ModelSerializer):
         if flagged is not None:
             return flagged
         return bool(obj.is_overdue)
+
+    def get_supporters_count(self, obj):
+        return obj.supporters.count()
 
 
 # Resident create whitelist: a resident payload has no status/priority/worker.

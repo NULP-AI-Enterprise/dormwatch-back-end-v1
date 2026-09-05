@@ -2,6 +2,7 @@ from django.db import models
 from django.db.models import Q
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.db.models import JSONField
 import uuid
 
 
@@ -129,6 +130,8 @@ class Complaint(models.Model):
     category = models.ForeignKey(ComplaintCategory, on_delete=models.SET_NULL, null=True, blank=True)
     priority = models.CharField(max_length=50, choices=COMPLAINT_PRIORITY, default='medium')
     rejection_reason = models.TextField(blank=True, default='')
+    embedding = JSONField(null=True, blank=True)
+    supporters = models.ManyToManyField(UserProfile, related_name='supported_complaints', blank=True)
 
     # --- Assignment + lifecycle (absorbed from the deleted Ticket model) ---
     # Assigned contractor. SET_NULL so deleting a worker unassigns their
@@ -223,6 +226,24 @@ class Complaint(models.Model):
         return ComplaintEvent.objects.create(
             complaint=self, actor=actor, action=action, worker=worker,
         )
+
+    def save(self, *args, **kwargs):
+        """Override save to generate embeddings when title or description changes."""
+        update_fields = kwargs.get('update_fields')
+        # Only recompute if we are doing a full save, or if title/desc are explicitly updated
+        if update_fields is None or 'title' in update_fields or 'description' in update_fields:
+            try:
+                from .similarity_utils import generate_embedding
+                text = f"{self.title}. {self.description}"
+                emb = generate_embedding(text)
+                if emb:
+                    self.embedding = emb
+            except Exception as e:
+                # Fallback gracefully if embedding fails (e.g. pgvector not ready)
+                print(f"Failed to generate embedding: {e}")
+        
+        super().save(*args, **kwargs)
+
 
 
 class ComplaintEvent(models.Model):
