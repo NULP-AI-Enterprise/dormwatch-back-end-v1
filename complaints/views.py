@@ -529,9 +529,7 @@ class UserComplaintView(APIView):
                     {'place': 'Можна обрати лише місце у вашому гуртожитку'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            target_place = Place.objects.filter(
-                place_id=place_id_int, building=building
-            ).first()
+            target_place = _allowed_complaint_places(user_profile).filter(place_id=place_id_int).first()
             if target_place is None:
                 return Response(
                     {'place': 'Можна обрати лише місце у вашому гуртожитку'},

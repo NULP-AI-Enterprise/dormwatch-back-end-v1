@@ -2,6 +2,7 @@ from django.urls import path
 from django.http import JsonResponse
 from . import views
 from . import auth_views
+from . import similarity_views
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -49,6 +50,11 @@ urlpatterns = [
     path('categories/', views.CategoryListView.as_view(), name='categories'),
     path('admin/categories/', views.AdminCategoryCreateView.as_view(), name='admin-categories'),
     path('admin/categories/<int:category_id>/', views.AdminCategoryDetailView.as_view(), name='admin-category-detail'),
+    
+    # Semantic Similarity Duplication Prevention
+    path('api/complaints/similar/', similarity_views.SimilarComplaintsView.as_view(), name='complaints-similar'),
+    path('api/complaints/<int:complaint_id>/upvote/', similarity_views.UpvoteComplaintView.as_view(), name='complaints-upvote'),
+
     path('admin/buildings/', views.AdminBuildingCreateView.as_view(), name='admin-buildings'),
     path('admin/buildings/<int:building_id>/', views.AdminBuildingDetailView.as_view(), name='admin-building-detail'),
     path('admin/places/<int:place_id>/', views.AdminPlaceDetailView.as_view(), name='admin-place-detail'),
