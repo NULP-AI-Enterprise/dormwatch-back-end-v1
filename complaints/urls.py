@@ -2,6 +2,7 @@ from django.urls import path
 from django.http import JsonResponse
 from . import views
 from . import auth_views
+from . import similarity_views
 from django.conf import settings
 from django.conf.urls.static import static
 
@@ -27,28 +28,38 @@ urlpatterns = [
     path('me/complaints/', views.UserComplaintView.as_view(), name='user-complaint'),
     path('me/complaint-places/', views.MyComplaintPlacesView.as_view(), name='my-complaint-places'),
     path('me/complaints/<int:complaint_id>/', views.UserComplaintDetailView.as_view(), name = 'user-complaint-detail'),
-    path('me/complaints/<int:complaint_id>/resolve/', views.ResolveMyComplaintView.as_view(), name='resolve-my-complaint'),
-    path('me/tickets/', views.UserTicketView.as_view(), name='user-tickets'),
+    path('me/complaints/<int:complaint_id>/accept/', views.ResidentComplaintActionView.as_view(action='accept'), name='accept-my-complaint'),
+    path('me/complaints/<int:complaint_id>/reject/', views.ResidentComplaintActionView.as_view(action='reject'), name='reject-my-complaint'),
+    path('me/complaints/<int:complaint_id>/withdraw/', views.ResidentComplaintActionView.as_view(action='withdraw'), name='withdraw-my-complaint'),
+    path('complaints/<int:complaint_id>/refile/', views.ComplaintRefileView.as_view(), name='complaint-refile'),
+    path('worker/complaints/', views.WorkerComplaintListView.as_view(), name='worker-complaints'),
+    path('worker/complaints/<int:complaint_id>/', views.WorkerComplaintActionView.as_view(), name='worker-complaint-action'),
     path('complaints/<int:complaint_id>/comments/', views.CommentListView.as_view(), name="comments"),
     path('comments/<int:comment_id>/', views.CommentDeleteView.as_view(), name="delete-comment"),
-    path('admin/complaints/<int:complaint_id>/status/', views.AdminComplaintStatusView.as_view(), name = "complaint-status-change"),
+    path('admin/complaints/<int:complaint_id>/', views.AdminComplaintDetailView.as_view(), name = "admin-complaint-detail"),
     path('admin/users/<str:user_id>/set-role/', views.UpdateUserRoleView.as_view(), name='set-user-role'),
     path('roles/', views.RoleListView.as_view(), name='roles'),
     path('admin/users/', views.AdminUserListView.as_view(), name='admin-users'),
     path('admin/users/<str:user_id>/', views.AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('admin/invites/', auth_views.InviteTokenCreateView.as_view(), name='admin-invites'),
     path('profile/', views.UserProfileView.as_view(), name="user-profile"),
-    path('tickets/', views.TicketView.as_view(), name='tickets'),
-    path('tickets/<int:ticket_id>/', views.TicketDetailView.as_view(), name='ticket-detail'),
     path('admin/workers/', views.WorkerListCreateView.as_view(), name='admin-workers'),
     path('admin/workers/<int:worker_id>/', views.WorkerDetailView.as_view(), name='admin-worker-detail'),
+     path('admin/workers/<int:worker_id>/invite/', views.WorkerInviteView.as_view(), name='admin-worker-invite'),
+     path('admin/workers/<int:worker_id>/unlink/', views.WorkerUnlinkView.as_view(), name='admin-worker-unlink'),
     path('categories/', views.CategoryListView.as_view(), name='categories'),
     path('admin/categories/', views.AdminCategoryCreateView.as_view(), name='admin-categories'),
     path('admin/categories/<int:category_id>/', views.AdminCategoryDetailView.as_view(), name='admin-category-detail'),
+    
+    # Semantic Similarity Duplication Prevention
+    path('api/complaints/similar/', similarity_views.SimilarComplaintsView.as_view(), name='complaints-similar'),
+    path('api/complaints/<int:complaint_id>/upvote/', similarity_views.UpvoteComplaintView.as_view(), name='complaints-upvote'),
+
     path('admin/buildings/', views.AdminBuildingCreateView.as_view(), name='admin-buildings'),
     path('admin/buildings/<int:building_id>/', views.AdminBuildingDetailView.as_view(), name='admin-building-detail'),
     path('admin/places/<int:place_id>/', views.AdminPlaceDetailView.as_view(), name='admin-place-detail'),
     path('admin/reports/completed/', views.CompletedReportView.as_view(), name='admin-reports-completed'),
+    path('admin/reports/workers/', views.WorkerReportView.as_view(), name='admin-reports-workers'),
     path('notifications/', views.NotificationListView.as_view(), name='notifications-list'),
     path('notifications/<int:notification_id>/', views.NotificationMarkReadView.as_view(), name='notification-mark-read'),
     path('notifications/mark-all-read/', views.NotificationMarkAllReadView.as_view(), name='notifications-mark-all-read'),
