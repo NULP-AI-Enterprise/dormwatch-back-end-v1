@@ -6,8 +6,8 @@ from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
 from django.db import IntegrityError
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker, Announcement
-from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer, AdminUpdateUserSerializer, RoleSerializer, AnnouncementSerializer
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Ticket, Notification, Worker, Announcement, Resource, ComplaintResource
+from .serializers import ComplaintSerializer, UpdateUserRoleSerializer, ComplaintStatusSerializer, CommentSerializer, UpdateUserSerializer, UserSerializer, UpdateUserPlaceSerializer, TicketSerializer, NotificationSerializer, CategorySerializer, DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer, AdminUpdateUserSerializer, RoleSerializer, AnnouncementSerializer, ResourceSerializer, ComplaintResourceSerializer
 from .image_utils import process_complaint_photo
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -1158,4 +1158,211 @@ class AnnouncementListView(APIView):
         announcements = announcements.order_by('-is_pinned', '-created_at')
         serializer = AnnouncementSerializer(announcements, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ResourceListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        resources = Resource.objects.all()
+        serializer = ResourceSerializer(resources, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user_profile = getattr(request.user, 'profile', None)
+        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
+        if not is_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = ResourceSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ResourceDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, resource_id):
+        user_profile = getattr(request.user, 'profile', None)
+        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
+        if not is_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            resource = Resource.objects.get(resource_id=resource_id)
+        except Resource.DoesNotExist:
+            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ResourceSerializer(resource, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, resource_id):
+        user_profile = getattr(request.user, 'profile', None)
+        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
+        if not is_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            resource = Resource.objects.get(resource_id=resource_id)
+        except Resource.DoesNotExist:
+            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            resource.delete()
+        except IntegrityError:
+            return Response(
+                {'error': 'Неможливо видалити ресурс, оскільки він уже використовується у скаргах'},
+                status=status.HTTP_409_CONFLICT
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ComplaintResourceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, complaint_id):
+        try:
+            complaint = Complaint.objects.get(complaint_id=complaint_id)
+        except Complaint.DoesNotExist:
+            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        usage = ComplaintResource.objects.filter(complaint=complaint).select_related('resource', 'logged_by')
+        serializer = ComplaintResourceSerializer(usage, many=True)
+        
+        total_cost = sum(item.quantity * item.unit_cost for item in usage)
+
+        return Response({
+            'complaint_id': complaint_id,
+            'total_cost': total_cost,
+            'resources': serializer.data
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, complaint_id):
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            complaint = Complaint.objects.get(complaint_id=complaint_id)
+        except Complaint.DoesNotExist:
+            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        resource_id = request.data.get('resource_id')
+        try:
+            resource = Resource.objects.get(resource_id=resource_id)
+        except Resource.DoesNotExist:
+            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        quantity = request.data.get('quantity', 1.0)
+        try:
+            quantity = float(quantity)
+            if quantity <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            return Response({'error': 'Кількість повинна бути більшою за 0'}, status=status.HTTP_400_BAD_REQUEST)
+
+        unit_cost = request.data.get('unit_cost', resource.unit_cost)
+        notes = request.data.get('notes', '')
+
+        complaint_resource = ComplaintResource.objects.create(
+            complaint=complaint,
+            resource=resource,
+            quantity=quantity,
+            unit_cost=unit_cost,
+            notes=notes,
+            logged_by=user_profile
+        )
+
+        serializer = ComplaintResourceSerializer(complaint_resource)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ComplaintResourceDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, complaint_id, resource_log_id):
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            log_item = ComplaintResource.objects.get(id=resource_log_id, complaint_id=complaint_id)
+        except ComplaintResource.DoesNotExist:
+            return Response({'error': 'Resource log not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        log_item.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ResourceExpenditureReportView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        logs = ComplaintResource.objects.select_related(
+            'complaint__place__building', 'resource', 'complaint__category', 'logged_by'
+        )
+
+        building_id = request.query_params.get('building_id')
+        category_id = request.query_params.get('category_id')
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        period = request.query_params.get('period', 'all')
+
+        now = timezone.now()
+        if period == 'day':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=1))
+        elif period == 'week':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=7))
+        elif period == 'month':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=30))
+        elif period == 'year':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=365))
+
+        if building_id:
+            logs = logs.filter(complaint__place__building_id=building_id)
+        if category_id:
+            logs = logs.filter(complaint__category_id=category_id)
+        if date_from:
+            logs = logs.filter(created_at__gte=date_from)
+        if date_to:
+            logs = logs.filter(created_at__lte=date_to)
+
+        total_cost = sum(item.quantity * item.unit_cost for item in logs)
+        total_items = logs.count()
+
+        # Aggregation by resource
+        resource_map = {}
+        for item in logs:
+            res_id = item.resource.resource_id
+            if res_id not in resource_map:
+                resource_map[res_id] = {
+                    'resource_id': res_id,
+                    'name': item.resource.name,
+                    'unit': item.resource.unit,
+                    'total_quantity': 0.0,
+                    'total_cost': 0.0,
+                    'count': 0
+                }
+            resource_map[res_id]['total_quantity'] += float(item.quantity)
+            resource_map[res_id]['total_cost'] += float(item.quantity * item.unit_cost)
+            resource_map[res_id]['count'] += 1
+
+        resource_summary = sorted(resource_map.values(), key=lambda x: x['total_cost'], reverse=True)
+
+        serializer = ComplaintResourceSerializer(logs[:100], many=True)
+
+        return Response({
+            'period': period,
+            'total_cost': float(total_cost),
+            'total_items_logged': total_items,
+            'resource_summary': resource_summary,
+            'recent_logs': serializer.data
+        }, status=status.HTTP_200_OK)
+
+
 
