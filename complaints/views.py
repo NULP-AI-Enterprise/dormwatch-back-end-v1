@@ -9,7 +9,7 @@ from django.utils.dateparse import parse_date
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, transaction, models
 from .models import (
     Complaint, ComplaintEvent, UserProfile, Comment, DormitoryBuilding, Place,
     ComplaintCategory, Role, Notification, PendingTransitionNotice, Worker,
