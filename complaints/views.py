@@ -1200,7 +1200,7 @@ class WorkerComplaintListView(APIView):
                 Complaint.objects
                 .filter(Q(worker=worker) | Q(events__worker=worker), archived=False)
                 .distinct()
-                .select_related('category', 'place__building', 'worker')
+                .select_related('category', 'place__building', 'worker', 'user')
             )
         )
         allowed_statuses = ['approved', 'in_progress', 'review', 'resolved', 'not_accepted']

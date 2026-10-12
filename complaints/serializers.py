@@ -121,6 +121,25 @@ class ComplaintEventSerializer(serializers.ModelSerializer):
         return f"{obj.actor.first_name} {obj.actor.last_name}".strip() or None
 
 
+def _get_student_phone_if_allowed(obj, request):
+    if not request or not request.user.is_authenticated:
+        return None
+    user = request.user
+    profile = getattr(user, 'profile', None)
+    is_admin = user.is_staff or user.is_superuser or bool(
+        profile and profile.role and profile.role.role_name.lower() in ['admin', 'адміністратор']
+    )
+    if is_admin:
+        return None
+    is_worker = bool(
+        profile and profile.role and profile.role.role_name.lower() in ['worker', 'працівник']
+    )
+    is_owner = (obj.user_id == user.id)
+    if (is_owner or is_worker) and obj.user and obj.user.phone:
+        return obj.user.phone
+    return None
+
+
 # Public board serializer: rooms/photos and the author identity are hidden
 # from everyone but staff — the feed shows what happened, never who/where
 # exactly lives behind it.
@@ -137,13 +156,18 @@ class PublicComplaintSerializer(serializers.ModelSerializer):
     place_id = serializers.IntegerField(source='place.place_id', read_only=True, allow_null=True)
     photo_url = serializers.ImageField(read_only=True)
     thumbnail = serializers.ImageField(read_only=True)
+    student_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
         fields = ['id', 'complaint_id', 'title', 'description', 'category', 'status',
                   'priority', 'created_at', 'building_name', 'supporters_count',
                   'is_shared', 'place_name', 'place_id', 'is_mine', 'user_id', 'user_name',
-                  'photo_url', 'thumbnail', 'is_rework']
+                  'photo_url', 'thumbnail', 'is_rework', 'student_phone']
+
+    def get_student_phone(self, obj):
+        request = self.context.get('request')
+        return _get_student_phone_if_allowed(obj, request)
 
     def get_building_name(self, obj):
         place = obj.place
@@ -193,6 +217,7 @@ class ComplaintSerializer(serializers.ModelSerializer):
     # (single objects).
     is_overdue = serializers.SerializerMethodField()
     supporters_count = serializers.SerializerMethodField()
+    student_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
@@ -202,9 +227,13 @@ class ComplaintSerializer(serializers.ModelSerializer):
             'resolved_at',
             'worker', 'deadline', 'started_at', 'finished_at', 'work_note',
             'rejection_reason', 'rework_reason', 'is_rework', 'rework_photo', 'completion_photo',
-            'follow_up_of', 'root', 'is_overdue', 'supporters_count',
+            'follow_up_of', 'root', 'is_overdue', 'supporters_count', 'student_phone',
         ]
         read_only_fields = ['id', 'complaint_id', 'created_at', 'user', 'status']
+
+    def get_student_phone(self, obj):
+        request = self.context.get('request')
+        return _get_student_phone_if_allowed(obj, request)
 
     def get_is_overdue(self, obj):
         flagged = getattr(obj, 'overdue_flag', None)
@@ -262,6 +291,7 @@ class WorkerComplaintSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     place = PlaceSerializer(read_only=True)
     is_overdue = serializers.SerializerMethodField()
+    student_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
@@ -269,7 +299,12 @@ class WorkerComplaintSerializer(serializers.ModelSerializer):
                   'priority', 'place', 'photo_url', 'thumbnail',
                   'deadline', 'started_at', 'finished_at', 'work_note',
                   'is_rework', 'rework_reason', 'rework_photo', 'completion_photo',
-                  'is_overdue', 'follow_up_of', 'root', 'created_at']
+                  'is_overdue', 'follow_up_of', 'root', 'created_at', 'student_phone']
+
+    def get_student_phone(self, obj):
+        if obj.user and obj.user.phone:
+            return obj.user.phone
+        return None
 
     def get_is_overdue(self, obj):
         flagged = getattr(obj, 'overdue_flag', None)
