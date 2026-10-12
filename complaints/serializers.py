@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Notification, Worker, Announcement, ComplaintEvent, InviteToken, COMPLAINT_STATUS, COMPLAINT_PRIORITY
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Notification, Worker, Announcement, ComplaintEvent, InviteToken, COMPLAINT_STATUS, COMPLAINT_PRIORITY, Resource, ComplaintResource
 from .image_utils import process_complaint_photo
 
 
@@ -487,4 +487,32 @@ class AnnouncementSerializer(serializers.ModelSerializer):
     def get_is_expired(self, obj):
         from django.utils import timezone
         return bool(obj.expires_at and obj.expires_at < timezone.localdate())
+
+
+class ResourceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Resource
+        fields = ['resource_id', 'name', 'unit', 'unit_cost', 'description', 'created_at']
+        read_only_fields = ['resource_id', 'created_at']
+
+
+class ComplaintResourceSerializer(serializers.ModelSerializer):
+    resource_details = ResourceSerializer(source='resource', read_only=True)
+    logged_by_name = serializers.SerializerMethodField()
+    total_cost = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = ComplaintResource
+        fields = [
+            'id', 'complaint', 'resource', 'resource_details',
+            'quantity', 'unit_cost', 'total_cost', 'notes',
+            'logged_by', 'logged_by_name', 'created_at'
+        ]
+        read_only_fields = ['id', 'logged_by', 'created_at', 'total_cost']
+
+    def get_logged_by_name(self, obj):
+        if obj.logged_by:
+            return f"{obj.logged_by.first_name} {obj.logged_by.last_name}".strip()
+        return "Система"
+
 

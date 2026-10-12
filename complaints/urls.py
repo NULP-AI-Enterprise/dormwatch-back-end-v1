@@ -69,6 +69,11 @@ urlpatterns = [
     path('admin/announcements/', views.AdminAnnouncementView.as_view(), name='admin-announcements'),
     path('admin/announcements/<int:announcement_id>/', views.AdminAnnouncementDetailView.as_view(), name='admin-announcement-detail'),
     path('announcements/', views.AnnouncementListView.as_view(), name='announcements-list'),
+    path('resources/', views.ResourceListCreateView.as_view(), name='resources'),
+    path('resources/<int:resource_id>/', views.ResourceDetailView.as_view(), name='resource-detail'),
+    path('complaints/<int:complaint_id>/resources/', views.ComplaintResourceView.as_view(), name='complaint-resources'),
+    path('complaints/<int:complaint_id>/resources/<int:resource_log_id>/', views.ComplaintResourceDetailView.as_view(), name='complaint-resource-detail'),
+    path('admin/reports/resources/', views.ResourceExpenditureReportView.as_view(), name='admin-resource-report'),
 ]
 
 if settings.DEBUG:
