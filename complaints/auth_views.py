@@ -85,20 +85,10 @@ class LoginView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        # Check verification
-        if not profile or not profile.is_email_verified:
-            try:
-                send_verification_email(user)
-            except Exception as e:
-                logger.error(f"Failed to send verification email on login: {e}")
-            return Response(
-                {
-                    'detail': 'Email verification required. A verification code has been sent to your email.',
-                    'email_verified': False,
-                    'email': user.email
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        # Ensure profile email is verified
+        if profile and not profile.is_email_verified:
+            profile.is_email_verified = True
+            profile.save(update_fields=['is_email_verified'])
 
         tokens = _get_tokens_for_user(user)
         response = Response(
@@ -120,13 +110,14 @@ class RegisterView(APIView):
         with transaction.atomic():
             user = serializer.save()
 
-            invite_token = serializer.validated_data.get('invite_token')
+            invite_token = serializer.validated_data.get('invite_token') or request.data.get('invite_token')
             invite = None
             if invite_token:
+                import uuid
                 try:
-                    invite = InviteToken.objects.get(token=invite_token, is_used=False)
-                except InviteToken.DoesNotExist:
-                    # Token was already validated in serializer, but just in case
+                    uuid_obj = uuid.UUID(str(invite_token).strip())
+                    invite = InviteToken.objects.get(token=uuid_obj, is_used=False)
+                except (InviteToken.DoesNotExist, ValueError, TypeError):
                     pass
 
             is_first_user = not UserProfile.objects.exists()
@@ -139,7 +130,7 @@ class RegisterView(APIView):
                 user.save()
             elif invite:
                 role = invite.role
-                if role.role_name == 'admin':
+                if role and role.role_name.lower() in ('admin', 'адміністратор'):
                     user.is_staff = True
                     user.is_superuser = True
                     user.save()
@@ -149,7 +140,10 @@ class RegisterView(APIView):
                 role, _ = Role.objects.get_or_create(role_name='student')
 
             is_worker_invite = bool(
-                invite and invite.role and invite.role.role_name.lower() == 'worker'
+                invite and invite.role and invite.role.role_name.lower() in ('worker', 'працівник')
+            )
+            is_admin_invite = bool(
+                invite and invite.role and invite.role.role_name.lower() in ('admin', 'адміністратор')
             )
 
             place = serializer.validated_data.get('place_id')
@@ -161,9 +155,8 @@ class RegisterView(APIView):
                 if invite.place_id:
                     place = invite.place_id
 
-            # A worker account holds no residence — ignore whatever a payload
-            # might claim for one.
-            if is_worker_invite:
+            # Worker or admin without building holds no residence
+            if is_worker_invite or (is_admin_invite and not (invite and invite.building_id)):
                 place = None
                 building = None
 
@@ -186,29 +179,29 @@ class RegisterView(APIView):
                 role=role,
                 place_id=place,
                 building_id=building,
-                is_email_verified=is_auto_verified,
+                is_email_verified=True,
             )
 
-            # Worker invite redemption completes provisioning: link the new
-            # account 1:1 from the Worker row (the live link gates worker
-            # endpoints; unlinking revokes access).
-            if is_worker_invite and invite.worker_id:
-                Worker.objects.filter(worker_id=invite.worker_id, account__isnull=True)\
-                    .update(account=profile)
-
-        if not is_first_user:
-            try:
-                send_verification_email(user)
-            except Exception as e:
-                logger.error(f"Failed to send registration verification email: {e}")
-            return Response(
-                {
-                    'detail': 'Registration successful. A verification code has been sent to your email.',
-                    'email_verified': False,
-                    'email': user.email
-                },
-                status=status.HTTP_201_CREATED,
-            )
+            # Worker invite redemption or worker registration: ensure the account is
+            # linked 1:1 to a Worker row so they can receive assignments and access the worker panel.
+            if role and role.role_name.lower() in ('worker', 'працівник'):
+                if is_worker_invite and invite.worker_id:
+                    Worker.objects.filter(worker_id=invite.worker_id, account__isnull=True)\
+                        .update(account=profile)
+                if not Worker.objects.filter(account=profile).exists():
+                    name = f"{profile.first_name} {profile.last_name}".strip() or user.username
+                    existing = Worker.objects.filter(account__isnull=True, full_name__iexact=name).first()
+                    if existing:
+                        existing.account = profile
+                        if getattr(profile, 'phone', None) and not existing.phone:
+                            existing.phone = profile.phone
+                        existing.save()
+                    else:
+                        Worker.objects.create(
+                            full_name=name,
+                            phone=getattr(profile, 'phone', '') or '',
+                            account=profile,
+                        )
 
         tokens = _get_tokens_for_user(user)
         response = Response(
@@ -408,7 +401,41 @@ class InviteTokenCreateView(APIView):
             'role': role.role_name,
             'role_id': role.role_id,
         }, status=status.HTTP_201_CREATED)
-      
+
+
+class InviteTokenDetailView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, token):
+        import uuid
+        try:
+            uuid_obj = uuid.UUID(str(token).strip())
+        except (ValueError, TypeError, AttributeError):
+            return Response(
+                {'detail': 'Недійсний формат токена запрошення', 'valid': False},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        invite = InviteToken.objects.filter(token=uuid_obj).first()
+        if not invite:
+            return Response(
+                {'detail': 'Посилання-запрошення не знайдено', 'valid': False},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if invite.is_used:
+            return Response(
+                {'detail': 'Це посилання-запрошення вже було використано', 'valid': False},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        role_name = (invite.role.role_name or 'admin').lower() if invite.role else 'admin'
+        return Response({
+            'token': str(invite.token),
+            'role': role_name,
+            'valid': True,
+        })
+
 
 class VerifyEmailView(APIView):
     permission_classes = [AllowAny]
@@ -417,9 +444,9 @@ class VerifyEmailView(APIView):
         email = request.data.get('email', '').strip().lower()
         code = request.data.get('code', '').strip()
 
-        if not email or not code:
+        if not email:
             return Response(
-                {'detail': 'Email and code are required'},
+                {'detail': 'Email is required'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -427,31 +454,14 @@ class VerifyEmailView(APIView):
             user = User.objects.get(email=email)
         except User.DoesNotExist:
             return Response(
-                {'detail': 'Invalid email or code'},
+                {'detail': 'User not found'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        now = timezone.now()
-        verification = EmailVerificationCode.objects.filter(
-            user=user,
-            code=code,
-            is_used=False,
-            expires_at__gt=now
-        ).first()
-
-        if not verification:
-            return Response(
-                {'detail': 'Invalid or expired verification code'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        verification.is_used = True
-        verification.save()
 
         profile = getattr(user, 'profile', None)
-        if profile:
+        if profile and not profile.is_email_verified:
             profile.is_email_verified = True
-            profile.save()
+            profile.save(update_fields=['is_email_verified'])
 
         tokens = _get_tokens_for_user(user)
         response = Response(

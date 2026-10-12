@@ -94,7 +94,8 @@ class UserProfile(models.Model):
         DormitoryBuilding, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='residents',
     )
-    is_email_verified = models.BooleanField(default=False)
+    is_email_verified = models.BooleanField(default=True)
+    phone = models.CharField(max_length=32, blank=True, default='')
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
@@ -142,6 +143,9 @@ class Complaint(models.Model):
     finished_at = models.DateTimeField(null=True, blank=True)
     work_note = models.TextField(blank=True)
     rework_reason = models.TextField(blank=True)
+    is_rework = models.BooleanField(default=False)
+    rework_photo = models.ImageField(upload_to='complaint_rework_photos/', blank=True, null=True)
+    completion_photo = models.ImageField(upload_to='complaint_completion_photos/', blank=True, null=True)
     # Re-file chains: follow_up_of points at the complaint this one re-files,
     # root denormalizes the chain head at creation so lists and reports can
     # group a whole chain by it.
