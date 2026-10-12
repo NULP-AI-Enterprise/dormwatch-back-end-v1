@@ -292,6 +292,9 @@ class WorkerComplaintSerializer(serializers.ModelSerializer):
     place = PlaceSerializer(read_only=True)
     is_overdue = serializers.SerializerMethodField()
     student_phone = serializers.SerializerMethodField()
+    assigned_at = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
+    latest_foreign_comment_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
@@ -299,7 +302,8 @@ class WorkerComplaintSerializer(serializers.ModelSerializer):
                   'priority', 'place', 'photo_url', 'thumbnail',
                   'deadline', 'started_at', 'finished_at', 'work_note',
                   'is_rework', 'rework_reason', 'rework_photo', 'completion_photo',
-                  'is_overdue', 'follow_up_of', 'root', 'created_at', 'student_phone']
+                  'is_overdue', 'follow_up_of', 'root', 'created_at', 'student_phone',
+                  'assigned_at', 'comments_count', 'latest_foreign_comment_id']
 
     def get_student_phone(self, obj):
         if obj.user and obj.user.phone:
@@ -311,6 +315,28 @@ class WorkerComplaintSerializer(serializers.ModelSerializer):
         if flagged is not None:
             return flagged
         return bool(obj.is_overdue)
+
+    def get_assigned_at(self, obj):
+        ev = (
+            obj.events
+            .filter(action__in=['assigned', 'reassigned'])
+            .order_by('-created_at', '-event_id')
+            .first()
+        )
+        if ev:
+            return ev.created_at
+        return obj.started_at or obj.created_at
+
+    def get_comments_count(self, obj):
+        return obj.comment_set.count()
+
+    def get_latest_foreign_comment_id(self, obj):
+        request = self.context.get('request')
+        qs = obj.comment_set.all()
+        if request and request.user.is_authenticated:
+            qs = qs.exclude(user_id=request.user.id)
+        latest = qs.order_by('-comment_id').first()
+        return latest.comment_id if latest else None
 
 
 # Worker PATCH whitelist: stamps via explicit action verbs + optional note and completion photo.
