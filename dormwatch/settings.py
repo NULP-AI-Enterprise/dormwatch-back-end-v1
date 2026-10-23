@@ -33,7 +33,7 @@ ALLOWED_HOSTS = [
     h.strip()
     for h in os.environ.get(
         'ALLOWED_HOSTS',
-        'dormwatch-v1.thesis-i.com,127.0.0.1'
+        'dormwatch-v1.thesis-i.com,127.0.0.1,localhost,testserver'
     ).split(',')
     if h.strip()
 ]
@@ -197,12 +197,12 @@ SIMPLE_JWT = {
     'AUTH_COOKIE_PATH': '/api/auth',
 }
 
-# Email Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
-EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() in ('true', '1', 'yes')
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', EMAIL_HOST_USER)
+# Email Configuration (SMTP disabled)
+EMAIL_BACKEND = 'django.core.mail.backends.dummy.EmailBackend'
+EMAIL_HOST = os.environ.get('EMAIL_HOST', 'localhost')
+EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 25))
+EMAIL_USE_TLS = False
+EMAIL_HOST_USER = ''
+EMAIL_HOST_PASSWORD = ''
+DEFAULT_FROM_EMAIL = 'noreply@dormwatch.local'
 

@@ -42,6 +42,7 @@ urlpatterns = [
     path('admin/users/', views.AdminUserListView.as_view(), name='admin-users'),
     path('admin/users/<str:user_id>/', views.AdminUserDetailView.as_view(), name='admin-user-detail'),
     path('admin/invites/', auth_views.InviteTokenCreateView.as_view(), name='admin-invites'),
+    path('invites/<str:token>/', auth_views.InviteTokenDetailView.as_view(), name='invite-detail'),
     path('profile/', views.UserProfileView.as_view(), name="user-profile"),
     path('admin/workers/', views.WorkerListCreateView.as_view(), name='admin-workers'),
     path('admin/workers/<int:worker_id>/', views.WorkerDetailView.as_view(), name='admin-worker-detail'),
@@ -52,8 +53,10 @@ urlpatterns = [
     path('admin/categories/<int:category_id>/', views.AdminCategoryDetailView.as_view(), name='admin-category-detail'),
     
     # Semantic Similarity Duplication Prevention
-    path('api/complaints/similar/', similarity_views.SimilarComplaintsView.as_view(), name='complaints-similar'),
-    path('api/complaints/<int:complaint_id>/upvote/', similarity_views.UpvoteComplaintView.as_view(), name='complaints-upvote'),
+    path('complaints/similar/', similarity_views.SimilarComplaintsView.as_view(), name='complaints-similar'),
+    path('complaints/<int:complaint_id>/upvote/', similarity_views.UpvoteComplaintView.as_view(), name='complaints-upvote'),
+    path('api/complaints/similar/', similarity_views.SimilarComplaintsView.as_view()),
+    path('api/complaints/<int:complaint_id>/upvote/', similarity_views.UpvoteComplaintView.as_view()),
 
     path('admin/buildings/', views.AdminBuildingCreateView.as_view(), name='admin-buildings'),
     path('admin/buildings/<int:building_id>/', views.AdminBuildingDetailView.as_view(), name='admin-building-detail'),
@@ -66,6 +69,11 @@ urlpatterns = [
     path('admin/announcements/', views.AdminAnnouncementView.as_view(), name='admin-announcements'),
     path('admin/announcements/<int:announcement_id>/', views.AdminAnnouncementDetailView.as_view(), name='admin-announcement-detail'),
     path('announcements/', views.AnnouncementListView.as_view(), name='announcements-list'),
+    path('resources/', views.ResourceListCreateView.as_view(), name='resources'),
+    path('resources/<int:resource_id>/', views.ResourceDetailView.as_view(), name='resource-detail'),
+    path('complaints/<int:complaint_id>/resources/', views.ComplaintResourceView.as_view(), name='complaint-resources'),
+    path('complaints/<int:complaint_id>/resources/<int:resource_log_id>/', views.ComplaintResourceDetailView.as_view(), name='complaint-resource-detail'),
+    path('admin/reports/resources/', views.ResourceExpenditureReportView.as_view(), name='admin-resource-report'),
 ]
 
 if settings.DEBUG:

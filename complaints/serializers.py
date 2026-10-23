@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
-from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Notification, Worker, Announcement, ComplaintEvent, InviteToken, COMPLAINT_STATUS, COMPLAINT_PRIORITY
+from .models import Complaint, UserProfile, Comment, DormitoryBuilding, Place, ComplaintCategory, Role, Notification, Worker, Announcement, ComplaintEvent, InviteToken, COMPLAINT_STATUS, COMPLAINT_PRIORITY, Resource, ComplaintResource
 from .image_utils import process_complaint_photo
 
 
@@ -73,13 +73,13 @@ class UserSerializer(serializers.ModelSerializer):
     role = RoleSerializer(read_only=True)
     class Meta:
         model = UserProfile
-        fields = ['user', 'first_name', 'last_name', 'email', 'place', 'building', 'photo_url', 'role']
+        fields = ['user', 'first_name', 'last_name', 'email', 'place', 'building', 'photo_url', 'role', 'phone']
 
 
 class UpdateUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserProfile
-        fields = ['first_name', 'last_name', 'email', 'photo_url']
+        fields = ['first_name', 'last_name', 'email', 'photo_url', 'phone']
 
 
 class UpdateUserPlaceSerializer(serializers.Serializer):
@@ -121,18 +121,53 @@ class ComplaintEventSerializer(serializers.ModelSerializer):
         return f"{obj.actor.first_name} {obj.actor.last_name}".strip() or None
 
 
+def _get_student_phone_if_allowed(obj, request):
+    if not request or not request.user.is_authenticated:
+        return None
+    user = request.user
+    profile = getattr(user, 'profile', None)
+    is_admin = user.is_staff or user.is_superuser or bool(
+        profile and profile.role and profile.role.role_name.lower() in ['admin', 'адміністратор']
+    )
+    if is_admin:
+        return None
+    is_worker = bool(
+        profile and profile.role and profile.role.role_name.lower() in ['worker', 'працівник']
+    )
+    is_owner = (obj.user_id == user.id)
+    if (is_owner or is_worker) and obj.user and obj.user.phone:
+        return obj.user.phone
+    return None
+
+
 # Public board serializer: rooms/photos and the author identity are hidden
 # from everyone but staff — the feed shows what happened, never who/where
 # exactly lives behind it.
 class PublicComplaintSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='complaint_id', read_only=True)
     category = CategorySerializer(read_only=True)
     building_name = serializers.SerializerMethodField()
     supporters_count = serializers.SerializerMethodField()
+    is_shared = serializers.SerializerMethodField()
+    place_name = serializers.SerializerMethodField()
+    is_mine = serializers.SerializerMethodField()
+    user_id = serializers.SerializerMethodField()
+    user_name = serializers.SerializerMethodField()
+    place_id = serializers.IntegerField(source='place.place_id', read_only=True, allow_null=True)
+    photo_url = serializers.ImageField(read_only=True)
+    thumbnail = serializers.ImageField(read_only=True)
+    student_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
-        fields = ['complaint_id', 'title', 'description', 'category', 'status',
-                  'priority', 'created_at', 'building_name', 'supporters_count']
+        fields = ['id', 'complaint_id', 'title', 'description', 'category', 'status',
+                  'priority', 'created_at', 'building_name', 'supporters_count',
+                  'is_shared', 'place_name', 'place_id', 'is_mine', 'user_id', 'user_name',
+                  'photo_url', 'thumbnail', 'is_rework', 'student_phone']
+
+    def get_student_phone(self, obj):
+        request = self.context.get('request')
+        return _get_student_phone_if_allowed(obj, request)
 
     def get_building_name(self, obj):
         place = obj.place
@@ -141,9 +176,38 @@ class PublicComplaintSerializer(serializers.ModelSerializer):
     def get_supporters_count(self, obj):
         return obj.supporters.count()
 
+    def get_is_shared(self, obj):
+        return obj.place.is_shared if obj.place else False
+
+    def get_place_name(self, obj):
+        if obj.place and (obj.place.is_shared or '[Блок]' in (obj.description or '')):
+            return obj.place.place_name
+        return None
+
+    def get_is_mine(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            return obj.user_id == request.user.id
+        return False
+
+    def get_user_id(self, obj):
+        return obj.user.user_id if obj.user else None
+
+    def get_user_name(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            user = request.user
+            if obj.user_id == user.id:
+                return f"{obj.user.first_name} {obj.user.last_name}".strip() if obj.user else ""
+            profile = getattr(user, 'profile', None)
+            if profile and profile.role and profile.role.role_name.lower() in ['admin', 'адміністратор']:
+                return f"{obj.user.first_name} {obj.user.last_name}".strip() if obj.user else ""
+        return "Автор звернення"
+
 
 # Owner/admin read shape: full lifecycle + assignment + re-file chain links.
 class ComplaintSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='complaint_id', read_only=True)
     category = CategorySerializer(read_only=True)
     place = PlaceSerializer(read_only=True)
     user = UserComplaintSerializer(read_only=True)
@@ -153,18 +217,23 @@ class ComplaintSerializer(serializers.ModelSerializer):
     # (single objects).
     is_overdue = serializers.SerializerMethodField()
     supporters_count = serializers.SerializerMethodField()
+    student_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
         fields = [
-            'complaint_id', 'user', 'title', 'description', 'category', 'status',
+            'id', 'complaint_id', 'user', 'title', 'description', 'category', 'status',
             'photo_url', 'thumbnail', 'created_at', 'place', 'priority',
             'resolved_at',
             'worker', 'deadline', 'started_at', 'finished_at', 'work_note',
-            'rejection_reason', 'rework_reason',
-            'follow_up_of', 'root', 'is_overdue', 'supporters_count',
+            'rejection_reason', 'rework_reason', 'is_rework', 'rework_photo', 'completion_photo',
+            'follow_up_of', 'root', 'is_overdue', 'supporters_count', 'student_phone',
         ]
-        read_only_fields = ['complaint_id', 'created_at', 'user', 'status']
+        read_only_fields = ['id', 'complaint_id', 'created_at', 'user', 'status']
+
+    def get_student_phone(self, obj):
+        request = self.context.get('request')
+        return _get_student_phone_if_allowed(obj, request)
 
     def get_is_overdue(self, obj):
         flagged = getattr(obj, 'overdue_flag', None)
@@ -218,18 +287,59 @@ class AdminComplaintUpdateSerializer(serializers.Serializer):
 # resident identity, no dorm-wide fields. Chain links + created_at let the
 # panel cite "Повторне до №N" and order a saga; stamps power the history.
 class WorkerComplaintSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='complaint_id', read_only=True)
     category = CategorySerializer(read_only=True)
     place = PlaceSerializer(read_only=True)
+    is_overdue = serializers.SerializerMethodField()
+    student_phone = serializers.SerializerMethodField()
+    assigned_at = serializers.SerializerMethodField()
+    comments_count = serializers.SerializerMethodField()
+    latest_foreign_comment_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Complaint
-        fields = ['complaint_id', 'title', 'description', 'category', 'status',
+        fields = ['id', 'complaint_id', 'title', 'description', 'category', 'status',
                   'priority', 'place', 'photo_url', 'thumbnail',
                   'deadline', 'started_at', 'finished_at', 'work_note',
-                  'follow_up_of', 'root', 'created_at']
+                  'is_rework', 'rework_reason', 'rework_photo', 'completion_photo',
+                  'is_overdue', 'follow_up_of', 'root', 'created_at', 'student_phone',
+                  'assigned_at', 'comments_count', 'latest_foreign_comment_id']
+
+    def get_student_phone(self, obj):
+        if obj.user and obj.user.phone:
+            return obj.user.phone
+        return None
+
+    def get_is_overdue(self, obj):
+        flagged = getattr(obj, 'overdue_flag', None)
+        if flagged is not None:
+            return flagged
+        return bool(obj.is_overdue)
+
+    def get_assigned_at(self, obj):
+        ev = (
+            obj.events
+            .filter(action__in=['assigned', 'reassigned'])
+            .order_by('-created_at', '-event_id')
+            .first()
+        )
+        if ev:
+            return ev.created_at
+        return obj.started_at or obj.created_at
+
+    def get_comments_count(self, obj):
+        return obj.comment_set.count()
+
+    def get_latest_foreign_comment_id(self, obj):
+        request = self.context.get('request')
+        qs = obj.comment_set.all()
+        if request and request.user.is_authenticated:
+            qs = qs.exclude(user_id=request.user.id)
+        latest = qs.order_by('-comment_id').first()
+        return latest.comment_id if latest else None
 
 
-# Worker PATCH whitelist: stamps via explicit action verbs + optional note.
+# Worker PATCH whitelist: stamps via explicit action verbs + optional note and completion photo.
 class WorkerStampSerializer(serializers.Serializer):
     ACTION_CHOICES = [
         ('start', 'Взято в роботу'),
@@ -239,6 +349,7 @@ class WorkerStampSerializer(serializers.Serializer):
     ]
     action = serializers.ChoiceField(choices=ACTION_CHOICES)
     note = serializers.CharField(required=False, allow_blank=True)
+    completion_photo = serializers.ImageField(required=False, allow_null=True)
 
 
 class UpdateUserRoleSerializer(serializers.ModelSerializer):
@@ -285,9 +396,10 @@ class AdminUpdateUserSerializer(serializers.ModelSerializer):
 class CommentSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     author_is_admin = serializers.SerializerMethodField()
+    author_role = serializers.SerializerMethodField()
     class Meta:
         model = Comment
-        fields = ['comment_id','complaint','user','user_name', 'author_is_admin', 'description', 'created_at']
+        fields = ['comment_id','complaint','user','user_name', 'author_is_admin', 'author_role', 'description', 'created_at']
         read_only_fields = ("created_at", "user",'complaint')
 
     def get_user_name(self, obj):
@@ -295,6 +407,36 @@ class CommentSerializer(serializers.ModelSerializer):
 
     def get_author_is_admin(self, obj):
         return bool(obj.user.role and obj.user.role.role_name.lower() in ['admin', 'адміністратор'])
+
+    def get_author_role(self, obj):
+        if not obj.user.role:
+            return 'student'
+        r = (obj.user.role.role_name or '').lower()
+        if r in ['admin', 'адміністратор']:
+            return 'admin'
+        if r in ['worker', 'працівник']:
+            return 'worker'
+        return 'student'
+
+
+ALLOWED_INVITE_EMAIL_DOMAINS = {
+    'lpnu.ua',
+    'gmail.com',
+    'ukr.net',
+    'yahoo.com',
+    'outlook.com',
+    'hotmail.com',
+    'icloud.com',
+    'meta.ua',
+    'i.ua',
+    'email.ua',
+    'proton.me',
+    'protonmail.com',
+    'live.com',
+    'msn.com',
+    'me.com',
+    'mac.com',
+}
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -311,7 +453,12 @@ class RegisterSerializer(serializers.Serializer):
         """The valid, unused InviteToken for `token`, or None."""
         if not token:
             return None
-        return InviteToken.objects.filter(token=token, is_used=False).first()
+        import uuid
+        try:
+            uuid_obj = uuid.UUID(str(token).strip())
+        except (ValueError, TypeError, AttributeError):
+            return None
+        return InviteToken.objects.filter(token=uuid_obj, is_used=False).first()
 
     def validate_email(self, value):
         email = value.strip().lower()
@@ -323,10 +470,18 @@ class RegisterSerializer(serializers.Serializer):
         if invite_token and not invite:
             raise serializers.ValidationError('Недійсне або вже використане посилання-запрошення')
 
-        if domain not in allowed and not invite:
-            raise serializers.ValidationError(
-                f'Email domain @{domain} is not authorized'
-            )
+        if invite:
+            is_valid_domain = domain in ALLOWED_INVITE_EMAIL_DOMAINS or domain.endswith('.lpnu.ua')
+            if not is_valid_domain:
+                raise serializers.ValidationError(
+                    f'Поштовий домен @{domain} не підтримується. Перевірте правильність написання (наприклад, @gmail.com, @ukr.net, @lpnu.ua).'
+                )
+        else:
+            if domain not in allowed and not domain.endswith('.lpnu.ua'):
+                raise serializers.ValidationError(
+                    f'Email domain @{domain} is not authorized'
+                )
+
         if User.objects.filter(email=email).exists():
             raise serializers.ValidationError('A user with this email already exists')
         return email
@@ -336,14 +491,12 @@ class RegisterSerializer(serializers.Serializer):
             raise serializers.ValidationError({'confirm_password': 'Passwords do not match'})
         # Building is required once any building exists. On an empty DB (first
         # user / admin bootstrap) there is nothing to pick, so it stays optional.
-        # A worker invite carries no residence either — workers are not residents.
+        # Any invite (admin or worker) is exempt from picking a resident building.
         building_id = data.get('building_id')
         if DormitoryBuilding.objects.exists() and not building_id:
-            invite = self._get_invite(data.get('invite_token'))
-            is_worker_invite = bool(invite and invite.role
-                                    and invite.role.role_name.lower() == 'worker')
-            if not is_worker_invite:
-                raise serializers.ValidationError({'building_id': 'Building selection is required'})
+            invite = self._get_invite(data.get('invite_token') or self.initial_data.get('invite_token'))
+            if not invite:
+                raise serializers.ValidationError({'building_id': 'Оберіть гуртожиток'})
         if building_id and not DormitoryBuilding.objects.filter(building_id=building_id).exists():
             raise serializers.ValidationError({'building_id': 'Building not found'})
         # A new user has no existing profile, so occupancy is the raw count.
@@ -395,4 +548,32 @@ class AnnouncementSerializer(serializers.ModelSerializer):
     def get_is_expired(self, obj):
         from django.utils import timezone
         return bool(obj.expires_at and obj.expires_at < timezone.localdate())
+
+
+class ResourceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Resource
+        fields = ['resource_id', 'name', 'unit', 'unit_cost', 'description', 'created_at']
+        read_only_fields = ['resource_id', 'created_at']
+
+
+class ComplaintResourceSerializer(serializers.ModelSerializer):
+    resource_details = ResourceSerializer(source='resource', read_only=True)
+    logged_by_name = serializers.SerializerMethodField()
+    total_cost = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = ComplaintResource
+        fields = [
+            'id', 'complaint', 'resource', 'resource_details',
+            'quantity', 'unit_cost', 'total_cost', 'notes',
+            'logged_by', 'logged_by_name', 'created_at'
+        ]
+        read_only_fields = ['id', 'logged_by', 'created_at', 'total_cost']
+
+    def get_logged_by_name(self, obj):
+        if obj.logged_by:
+            return f"{obj.logged_by.first_name} {obj.logged_by.last_name}".strip()
+        return "Система"
+
 

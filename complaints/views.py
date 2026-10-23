@@ -9,11 +9,11 @@ from django.utils.dateparse import parse_date
 from rest_framework import generics, permissions, viewsets
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, transaction, models
 from .models import (
     Complaint, ComplaintEvent, UserProfile, Comment, DormitoryBuilding, Place,
     ComplaintCategory, Role, Notification, PendingTransitionNotice, Worker,
-    Announcement, InviteToken, COMPLAINT_STATUS,
+    Announcement, InviteToken, COMPLAINT_STATUS, Resource, ComplaintResource,
 )
 from .serializers import (
     ComplaintSerializer, ComplaintCreateSerializer, PublicComplaintSerializer,
@@ -23,6 +23,7 @@ from .serializers import (
     UserSerializer, NotificationSerializer, CategorySerializer,
     DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer,
     AdminUpdateUserSerializer, RoleSerializer, AnnouncementSerializer,
+    ResourceSerializer, ComplaintResourceSerializer,
 )
 from .image_utils import process_complaint_photo
 from .worker_report_util import finishing_worker
@@ -37,10 +38,11 @@ from rest_framework import status
 # this before touching the model; the model's `transition()` is the single
 # place that writes status + timestamps together.
 ADMIN_TRANSITIONS = {
-    'pending': {'approved', 'rejected'},
+    'pending': {'approved', 'in_progress', 'rejected'},
     'approved': {'in_progress', 'rejected'},
     'in_progress': {'approved', 'review', 'rejected'},
-    'review': {'in_progress', 'resolved'},
+    'review': {'in_progress', 'rejected'},
+    'not_accepted': {'approved', 'in_progress', 'rejected'},
 }
 # Undo moves for stamps are admin-only backwards steps inside the matrix above;
 # workers get their own narrow set.
@@ -59,11 +61,32 @@ RESIDENT_TRANSITIONS = {
 # Admin proxy stamps land in the event log with the admin as actor — that
 # provenance is what keeps pay disputes and step09 reports honest.
 ADMIN_STATUS_EVENTS = {
+    ('pending', 'in_progress'): 'started',
     ('approved', 'in_progress'): 'started',
+    ('not_accepted', 'in_progress'): 'started',
     ('in_progress', 'review'): 'finished',
     ('in_progress', 'approved'): 'started_undo',
     ('review', 'in_progress'): 'finished_undo',
 }
+
+def _auto_resolve_expired_reviews():
+    '''If 3 days have passed since a complaint transitioned into 'review' and
+    the resident hasn't confirmed or rejected the work, auto-resolve it.'''
+    cutoff = timezone.now() - timedelta(days=3)
+    expired = Complaint.objects.filter(
+        status='review',
+        archived=False,
+    ).filter(
+        Q(finished_at__lte=cutoff) |
+        Q(finished_at__isnull=True, created_at__lte=cutoff)
+    )
+    for c in expired:
+        try:
+            c.transition('resolved')
+            c.save()
+            c.log_event('resolved_auto')
+        except Exception as e:
+            print(f"Error auto-resolving complaint #{c.complaint_id}:", e)
 
 # States a complaint can be re-filed from: only closed ones. An open source is
 # still being worked; its remedy is the lifecycle, not a second complaint.
@@ -79,6 +102,46 @@ STATUS_LABELS = dict(COMPLAINT_STATUS)
 
 def _get_profile(request):
     return UserProfile.objects.filter(user=request.user).first()
+
+
+def ensure_worker_for_profile(profile):
+    '''Ensure a 1:1 Worker model instance exists for a UserProfile with role `worker`.
+    This links self-registered workers or workers invited without a pre-existing Worker row
+    into the assignable Worker table.'''
+    if not profile or not profile.role:
+        return None
+    role_name = (profile.role.role_name or '').lower()
+    if role_name in ('worker', 'працівник'):
+        worker = getattr(profile, 'worker', None)
+        if worker is not None:
+            return worker
+        name = f"{profile.first_name} {profile.last_name}".strip() or profile.user.username
+        existing = Worker.objects.filter(account__isnull=True, full_name__iexact=name).first()
+        if existing:
+            existing.account = profile
+            if getattr(profile, 'phone', None) and not existing.phone:
+                existing.phone = profile.phone
+            existing.save(update_fields=['account', 'phone'] if getattr(profile, 'phone', None) else ['account'])
+            return existing
+        worker, _ = Worker.objects.get_or_create(
+            account=profile,
+            defaults={
+                'full_name': name,
+                'phone': getattr(profile, 'phone', '') or '',
+            }
+        )
+        return worker
+    return None
+
+
+def sync_all_worker_profiles():
+    '''Sync all UserProfiles that have role `worker` but no Worker record.'''
+    profiles = UserProfile.objects.filter(
+        role__role_name__in=['worker', 'працівник'],
+        worker__isnull=True
+    ).select_related('user', 'role')
+    for p in profiles:
+        ensure_worker_for_profile(p)
 
 
 def annotate_is_overdue(queryset):
@@ -421,6 +484,7 @@ class ComplaintView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
     def get(self,request):
+        _auto_resolve_expired_reviews()
         user_profile = _get_profile(request)
         if not user_profile:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -432,29 +496,48 @@ class ComplaintView(APIView):
         if is_admin:
             serializer_class = ComplaintSerializer
         else:
-            complaints = complaints.filter(
-                status__in=['approved', 'resolved'],
-                place__building=user_profile.building,
-            )
+            building = user_profile.building
+            if building is None and user_profile.place:
+                building = user_profile.place.building
+            if building is not None:
+                complaints = complaints.filter(place__building=building)
+            # Public board shows active issues and resolved ones (hide rejected, cancelled, denied)
+            complaints = complaints.exclude(status__in=['rejected', 'denied', 'withdrawn'])
+            # Public dorm board displays only:
+            # 1. Shared spaces in the building (place__is_shared=True)
+            # 2. Block complaints ([Блок]) ONLY for the student's own room/place!
+            if user_profile.place:
+                complaints = complaints.filter(
+                    Q(place__is_shared=True) |
+                    (Q(description__icontains='[Блок]') & (Q(place=user_profile.place) | Q(user=user_profile)))
+                )
+            else:
+                complaints = complaints.filter(place__is_shared=True)
             serializer_class = PublicComplaintSerializer
         category_param = request.query_params.get('category')
         status_param = request.query_params.get('status')
         corps_param = request.query_params.get('corps')
         priority_param = request.query_params.get('priority')
         overdue_param = request.query_params.get('overdue')
+        rework_param = request.query_params.get('rework')
         if category_param:
             complaints = complaints.filter(category_id=category_param)
         if status_param:
             complaints = complaints.filter(status=status_param)
         if corps_param:
-            complaints = complaints.filter(user__place__building__name=corps_param)
+            complaints = complaints.filter(
+                Q(place__building__name=corps_param) | Q(user__place__building__name=corps_param) | Q(user__building__name=corps_param)
+            )
         if priority_param:
             complaints = complaints.filter(priority=priority_param)
         # Admin triage filter over the derived flag (annotation survives the
         # chained .filter calls above).
         if overdue_param in ('true', '1'):
             complaints = complaints.filter(overdue_flag=True)
-        serializer = serializer_class(complaints, many=True)
+        if rework_param in ('true', '1'):
+            complaints = complaints.filter(is_rework=True)
+        complaints = complaints.order_by('-created_at')
+        serializer = serializer_class(complaints, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 class ComplaintDetailView(APIView):
@@ -464,6 +547,7 @@ class ComplaintDetailView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
     def get(self,request,complaint_id):
+        _auto_resolve_expired_reviews()
         user_profile = _get_profile(request)
         if not user_profile:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -475,13 +559,22 @@ class ComplaintDetailView(APIView):
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
 
         if is_admin:
-            serializer = AdminComplaintDetailSerializer(complaint)
+            serializer = AdminComplaintDetailSerializer(complaint, context={'request': request})
         elif complaint.user == user_profile:
-            serializer = ComplaintSerializer(complaint)
+            serializer = ComplaintSerializer(complaint, context={'request': request})
         elif complaint.worker and complaint.worker.account == user_profile:
-            serializer = WorkerComplaintSerializer(complaint)
-        elif complaint.status in ['approved', 'resolved'] and not complaint.archived:
-            serializer = PublicComplaintSerializer(complaint)
+            serializer = WorkerComplaintSerializer(complaint, context={'request': request})
+        elif not complaint.archived and complaint.status not in ['rejected', 'withdrawn']:
+            # For non-admin, non-author residents: only allow public view if it's shared space or block-level for their own room
+            is_shared = bool(complaint.place and complaint.place.is_shared)
+            is_own_block = bool(
+                '[Блок]' in (complaint.description or '') and
+                user_profile.place and
+                complaint.place_id == user_profile.place.place_id
+            )
+            if not (is_shared or is_own_block):
+                return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+            serializer = PublicComplaintSerializer(complaint, context={'request': request})
         else:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -493,14 +586,15 @@ class UserComplaintView(APIView):
     parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     def get(self, request):
+        _auto_resolve_expired_reviews()
         try:
             user_profile = request.user.profile
         except UserProfile.DoesNotExist:
             return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
         except AttributeError:
             return Response({'error': 'Profile not found'}, status=status.HTTP_404_NOT_FOUND)
-        complaints = Complaint.objects.filter(user=user_profile, archived=False)
-        serializer = ComplaintSerializer(complaints, many=True)
+        complaints = Complaint.objects.filter(user=user_profile, archived=False).order_by('-created_at')
+        serializer = ComplaintSerializer(complaints, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -529,7 +623,12 @@ class UserComplaintView(APIView):
                     {'place': 'Можна обрати лише місце у вашому гуртожитку'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            target_place = _allowed_complaint_places(user_profile).filter(place_id=place_id_int).first()
+            allowed_places = _allowed_complaint_places(user_profile)
+            target_place = next((p for p in allowed_places if p.place_id == place_id_int), None)
+            if target_place is None and building:
+                target_place = Place.objects.filter(
+                    place_id=place_id_int, building=building
+                ).first()
             if target_place is None:
                 return Response(
                     {'place': 'Можна обрати лише місце у вашому гуртожитку'},
@@ -552,13 +651,17 @@ class UserComplaintView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        priority = request.data.get('priority') or 'medium'
+        if priority not in ['low', 'medium', 'high', 'critical']:
+            priority = 'medium'
+
         # Resident payload whitelist: title/description/photo only. Status,
         # priority, and assignment are never resident-writable.
         serializer = ComplaintCreateSerializer(data=request.data)
         if serializer.is_valid():
             complaint = serializer.save(
                 user=user_profile, place=target_place,
-                category=category_obj, status='pending', priority='medium',
+                category=category_obj, status='pending', priority=priority,
             )
             try:
                 for admin in _admin_profiles():
@@ -639,26 +742,11 @@ class UserComplaintDetailView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def delete(self, request, complaint_id):
-        '''Owner-side removal. While Очікує (and nothing is assigned yet) the
-        owner may hard-delete their own complaint; afterwards the lifecycle
-        belongs to the process — withdraw/accept paths own the outcome.'''
-        user_profile = UserProfile.objects.filter(user=request.user).first()
-        if not user_profile:
-            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-
-        try:
-            complaint = Complaint.objects.get(complaint_id=complaint_id, user=user_profile)
-        except Complaint.DoesNotExist:
-            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        if complaint.status != 'pending' or complaint.worker:
-            return Response(
-                {'error': 'Скасувати можна лише звернення, що ще очікує на розгляд'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        complaint.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        '''Видалення звернень студентами заборонено.'''
+        return Response(
+            {'error': 'Видалення звернень користувачами заборонено'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
 class UpdateUserRoleView(APIView):
     permission_classes = [IsAdminUser]
@@ -676,6 +764,8 @@ class UpdateUserRoleView(APIView):
 
         if serializer.is_valid():
             serializer.save()
+            user_profile.refresh_from_db()
+            ensure_worker_for_profile(user_profile)
             return Response(serializer.data, status = status.HTTP_200_OK)
 
         return Response(serializer.errors, status = status.HTTP_400_BAD_REQUEST)
@@ -731,13 +821,14 @@ class AdminUserDetailView(APIView):
         if serializer.is_valid():
             serializer.save()
             user_profile.refresh_from_db()
+            ensure_worker_for_profile(user_profile)
             return Response(UserSerializer(user_profile).data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class UserProfileView(APIView):
     permission_classes=[IsAuthenticated]
-    parser_classes = (MultiPartParser, FormParser)
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
     def get(self, request):
         try:
             user_profile = (
@@ -789,6 +880,7 @@ class AdminComplaintDetailView(APIView):
     permission_classes = [IsAdminOrCustomAdmin]
 
     def get(self, request, complaint_id):
+        _auto_resolve_expired_reviews()
         try:
             complaint = Complaint.objects.select_related(
                 'category', 'place__building', 'user', 'worker'
@@ -823,6 +915,10 @@ class AdminComplaintDetailView(APIView):
         target_status = data.get('status', current_status)
         worker_changed = 'worker_id' in data
 
+        # Assigning a worker to a pending, approved, or not_accepted complaint automatically moves it to in_progress
+        if current_status in ('pending', 'approved', 'not_accepted') and worker_changed and data.get('worker_id') is not None:
+            target_status = 'in_progress'
+
         if target_status != current_status:
             legal = ADMIN_TRANSITIONS.get(current_status, set())
             if target_status not in legal:
@@ -842,15 +938,24 @@ class AdminComplaintDetailView(APIView):
                     new_worker = Worker.objects.get(worker_id=data['worker_id'])
                 except Worker.DoesNotExist:
                     return Response({'worker_id': 'Працівника не знайдено'}, status=status.HTTP_400_BAD_REQUEST)
-            final_status_needs_worker = target_status in ('approved', 'in_progress', 'review')
-            if new_worker and target_status == 'pending':
-                return Response(
-                    {'worker_id': 'Призначення можливе лише після схвалення'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            final_status_needs_worker = target_status in ('in_progress', 'review')
             if not new_worker and final_status_needs_worker:
                 return Response(
                     {'worker_id': f'Для статусу «{STATUS_LABELS[target_status]}» потрібен призначений працівник'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if new_worker is not None:
+                assigned_deadline = data.get('deadline') if 'deadline' in data else complaint.deadline
+                if not assigned_deadline:
+                    return Response(
+                        {'deadline': 'Обовʼязково вкажіть дедлайн виконання робіт'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        if 'deadline' in data and data['deadline'] is not None:
+            if data['deadline'] < timezone.now() - timezone.timedelta(minutes=5):
+                return Response(
+                    {'deadline': 'Дедлайн не може бути в минулому'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -929,6 +1034,7 @@ class ResidentComplaintActionView(APIView):
     while Очікує. Legality comes from RESIDENT_TRANSITIONS — nothing here can
     be spoofed by payload shape.'''
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     action = None  # bound per-route via as_view(action=...)
 
     def post(self, request, complaint_id):
@@ -962,12 +1068,26 @@ class ResidentComplaintActionView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             complaint.rework_reason = reason
-            # Persisted here because transition() writes only status + stamps.
-            complaint.save(update_fields=['rework_reason'])
+            complaint.is_rework = True
+            rework_photo = request.FILES.get('rework_photo')
+            if rework_photo:
+                complaint.rework_photo = rework_photo
+
+            if complaint.worker:
+                old_worker = complaint.worker
+                complaint.worker = None
+                complaint.log_event('unassigned', actor=actor, worker=old_worker)
+                _notify_worker_accounts(
+                    [old_worker.worker_id],
+                    "Завдання знято",
+                    f"Роботу за зверненням «{complaint.title}» не прийнято мешканцем. Завдання знято на доопрацювання.",
+                    complaint,
+                )
+            complaint.save()
 
         complaint.transition(to_state)
         _stage_transition_notices(complaint, actor=actor)
-        return Response(ComplaintSerializer(complaint).data, status=status.HTTP_200_OK)
+        return Response(ComplaintSerializer(complaint, context={'request': request}).data, status=status.HTTP_200_OK)
 
 
 def _clone_complaint_media(source, target):
@@ -1007,19 +1127,33 @@ class ComplaintRefileView(APIView):
         if source.archived:
             return Response({'error': 'Звернення архівовано'}, status=status.HTTP_403_FORBIDDEN)
 
-        if source.status not in TERMINAL_STATUSES:
+        if source.status != 'resolved':
             return Response(
-                {'status': 'Повторне звернення можна подати лише після завершення попереднього'},
+                {'status': 'Повторне звернення можна подати лише для вирішених звернень'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        description = (request.data.get('description') or '').strip() or source.description
+        resolved_time = source.resolved_at or source.finished_at or source.created_at
+        if timezone.now() - resolved_time > timedelta(days=7):
+            return Response(
+                {'status': 'Подати повторне звернення можна лише протягом 7 днів після вирішення'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = (request.data.get('reason') or request.data.get('description') or '').strip()
+        if not reason:
+            return Response(
+                {'reason': 'Обовʼязково вкажіть причину повторного звернення'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        new_description = f"Причина повторного звернення: {reason}\n\nПопередній опис:\n{source.description}"
         try:
             follow_up = Complaint.objects.create(
                 user=actor,
                 place=source.place,
                 title=source.title,
-                description=description,
+                description=new_description,
                 category=source.category,
                 follow_up_of=source,
                 root=source.root or source,
@@ -1049,53 +1183,73 @@ class ComplaintRefileView(APIView):
 
 class WorkerComplaintListView(APIView):
     '''Account-holding workers read their own jobs, scoped to job context only
-    (no resident identity, no dorm-wide feed). Default: the live list sorted by
-    next deadline. ?history=true: past jobs (finished or terminal) with their
-    stamps — the worker's own evidence for pay disputes.'''
+    (no resident identity, no dorm-wide feed). Returns assigned complaints and
+    jobs the worker participated in, supporting status filters.'''
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        _auto_resolve_expired_reviews()
         actor = _get_profile(request)
         if not actor:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        worker = getattr(actor, 'worker', None)
+        worker = getattr(actor, 'worker', None) or ensure_worker_for_profile(actor)
         if worker is None:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         complaints = (
-            Complaint.objects
-            .filter(worker=worker, archived=False)
-            .select_related('category', 'place__building')
+            annotate_is_overdue(
+                Complaint.objects
+                .filter(Q(worker=worker) | Q(events__worker=worker), archived=False)
+                .distinct()
+                .select_related('category', 'place__building', 'worker', 'user')
+            )
         )
+        allowed_statuses = ['approved', 'in_progress', 'review', 'resolved', 'not_accepted']
+        complaints = complaints.filter(status__in=allowed_statuses)
+
+        status_param = request.query_params.get('status')
+        if status_param and status_param in allowed_statuses:
+            complaints = complaints.filter(status=status_param)
+
         history = request.query_params.get('history') in ('true', '1')
         if history:
             complaints = (
                 complaints
-                .filter(Q(finished_at__isnull=False) | Q(status__in=TERMINAL_STATUSES))
+                .filter(status='resolved')
                 .order_by(F('finished_at').desc(nulls_last=True), '-created_at')
             )
         else:
             complaints = (
                 complaints
-                .exclude(status__in=TERMINAL_STATUSES)
-                # No-deadline jobs sort last — a worker's queue reads by
-                # "next due", and NULLs-first would bury past-due work.
-                .order_by(F('deadline').asc(nulls_last=True))
+                .order_by(
+                    Case(
+                        When(status='in_progress', then=Value(1)),
+                        When(status='approved', then=Value(2)),
+                        When(status='review', then=Value(3)),
+                        When(status='not_accepted', then=Value(4)),
+                        When(status='resolved', then=Value(5)),
+                        default=Value(6),
+                        output_field=models.IntegerField(),
+                    ),
+                    F('deadline').asc(nulls_last=True),
+                    '-created_at'
+                )
             )
-        serializer = WorkerComplaintSerializer(complaints, many=True)
+        serializer = WorkerComplaintSerializer(complaints, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class WorkerComplaintActionView(APIView):
     '''Account-holder stamps: Взято в роботу / Виконано (+ undos), optional
-    note — restricted to THIS worker's assigned complaints. Stamps go through
+    note and completion photo — restricted to THIS worker's assigned complaints. Stamps go through
     the single transition helper so timestamps stay consistent.'''
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def patch(self, request, complaint_id):
         actor = _get_profile(request)
         if not actor:
             return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-        worker = getattr(actor, 'worker', None)
+        worker = getattr(actor, 'worker', None) or ensure_worker_for_profile(actor)
         if worker is None:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
@@ -1118,14 +1272,24 @@ class WorkerComplaintActionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if 'note' in serializer.validated_data:
-            complaint.work_note = serializer.validated_data['note']
-            complaint.save(update_fields=['work_note'])
+        updated_fields = []
+        note = serializer.validated_data.get('note') or request.data.get('note')
+        if note is not None:
+            complaint.work_note = note
+            updated_fields.append('work_note')
+
+        completion_photo = request.FILES.get('completion_photo') or serializer.validated_data.get('completion_photo')
+        if completion_photo:
+            complaint.completion_photo = completion_photo
+            updated_fields.append('completion_photo')
+
+        if updated_fields:
+            complaint.save(update_fields=updated_fields)
 
         complaint.transition(to_state)
         complaint.log_event(event_action, actor=actor)
         _stage_transition_notices(complaint, actor=actor)
-        return Response(WorkerComplaintSerializer(complaint).data, status=status.HTTP_200_OK)
+        return Response(WorkerComplaintSerializer(complaint, context={'request': request}).data, status=status.HTTP_200_OK)
 
 
 class CommentListView(APIView):
@@ -1146,7 +1310,8 @@ class CommentListView(APIView):
         serializer = CommentSerializer(data=request.data)
         if serializer.is_valid():
             is_admin = user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор']
-            if complaint.user != user_profile and not is_admin:
+            is_worker = bool(complaint.worker and complaint.worker.account == user_profile)
+            if complaint.user != user_profile and not is_admin and not is_worker:
                 return Response({'error': 'Permission denied'},status=status.HTTP_403_FORBIDDEN)
             serializer.save(user=user_profile, complaint_id=complaint_id)
             
@@ -1176,7 +1341,8 @@ class CommentListView(APIView):
         except Complaint.DoesNotExist:
             return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
         is_admin = user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор']
-        if complaint.user != user_profile and not is_admin:
+        is_worker = bool(complaint.worker and complaint.worker.account == user_profile)
+        if complaint.user != user_profile and not is_admin and not is_worker:
             return Response({'error': 'Permission denied'},status=status.HTTP_403_FORBIDDEN)
         comments =( Comment.objects
                    .filter(complaint_id=complaint_id)
@@ -1218,6 +1384,7 @@ class WorkerListCreateView(APIView):
     permission_classes = [IsAdminOrCustomAdmin]
 
     def get(self, request):
+        sync_all_worker_profiles()
         workers = Worker.objects.all().order_by('full_name')
         serializer = WorkerSerializer(workers, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
@@ -1721,4 +1888,210 @@ class AnnouncementListView(APIView):
         announcements = announcements.order_by('-is_pinned', '-created_at')
         serializer = AnnouncementSerializer(announcements, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ResourceListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        resources = Resource.objects.all()
+        serializer = ResourceSerializer(resources, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        user_profile = getattr(request.user, 'profile', None)
+        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
+        if not is_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = ResourceSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ResourceDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, resource_id):
+        user_profile = getattr(request.user, 'profile', None)
+        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
+        if not is_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            resource = Resource.objects.get(resource_id=resource_id)
+        except Resource.DoesNotExist:
+            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ResourceSerializer(resource, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, resource_id):
+        user_profile = getattr(request.user, 'profile', None)
+        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
+        if not is_admin:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            resource = Resource.objects.get(resource_id=resource_id)
+        except Resource.DoesNotExist:
+            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            resource.delete()
+        except IntegrityError:
+            return Response(
+                {'error': 'Неможливо видалити ресурс, оскільки він уже використовується у скаргах'},
+                status=status.HTTP_409_CONFLICT
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ComplaintResourceView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, complaint_id):
+        try:
+            complaint = Complaint.objects.get(complaint_id=complaint_id)
+        except Complaint.DoesNotExist:
+            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        usage = ComplaintResource.objects.filter(complaint=complaint).select_related('resource', 'logged_by')
+        serializer = ComplaintResourceSerializer(usage, many=True)
+        
+        total_cost = sum(item.quantity * item.unit_cost for item in usage)
+
+        return Response({
+            'complaint_id': complaint_id,
+            'total_cost': total_cost,
+            'resources': serializer.data
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, complaint_id):
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            complaint = Complaint.objects.get(complaint_id=complaint_id)
+        except Complaint.DoesNotExist:
+            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        resource_id = request.data.get('resource_id')
+        try:
+            resource = Resource.objects.get(resource_id=resource_id)
+        except Resource.DoesNotExist:
+            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        quantity = request.data.get('quantity', 1.0)
+        try:
+            quantity = float(quantity)
+            if quantity <= 0:
+                raise ValueError()
+        except (ValueError, TypeError):
+            return Response({'error': 'Кількість повинна бути більшою за 0'}, status=status.HTTP_400_BAD_REQUEST)
+
+        unit_cost = request.data.get('unit_cost', resource.unit_cost)
+        notes = request.data.get('notes', '')
+
+        complaint_resource = ComplaintResource.objects.create(
+            complaint=complaint,
+            resource=resource,
+            quantity=quantity,
+            unit_cost=unit_cost,
+            notes=notes,
+            logged_by=user_profile
+        )
+
+        serializer = ComplaintResourceSerializer(complaint_resource)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ComplaintResourceDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, complaint_id, resource_log_id):
+        user_profile = getattr(request.user, 'profile', None)
+        if not user_profile:
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            log_item = ComplaintResource.objects.get(id=resource_log_id, complaint_id=complaint_id)
+        except ComplaintResource.DoesNotExist:
+            return Response({'error': 'Resource log not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        log_item.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ResourceExpenditureReportView(APIView):
+    permission_classes = [IsAdminOrCustomAdmin]
+
+    def get(self, request):
+        logs = ComplaintResource.objects.select_related(
+            'complaint__place__building', 'resource', 'complaint__category', 'logged_by'
+        )
+
+        building_id = request.query_params.get('building_id')
+        category_id = request.query_params.get('category_id')
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        period = request.query_params.get('period', 'all')
+
+        now = timezone.now()
+        if period == 'day':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=1))
+        elif period == 'week':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=7))
+        elif period == 'month':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=30))
+        elif period == 'year':
+            logs = logs.filter(created_at__gte=now - timezone.timedelta(days=365))
+
+        if building_id:
+            logs = logs.filter(complaint__place__building_id=building_id)
+        if category_id:
+            logs = logs.filter(complaint__category_id=category_id)
+        if date_from:
+            logs = logs.filter(created_at__gte=date_from)
+        if date_to:
+            logs = logs.filter(created_at__lte=date_to)
+
+        total_cost = sum(item.quantity * item.unit_cost for item in logs)
+        total_items = logs.count()
+
+        # Aggregation by resource
+        resource_map = {}
+        for item in logs:
+            res_id = item.resource.resource_id
+            if res_id not in resource_map:
+                resource_map[res_id] = {
+                    'resource_id': res_id,
+                    'name': item.resource.name,
+                    'unit': item.resource.unit,
+                    'total_quantity': 0.0,
+                    'total_cost': 0.0,
+                    'count': 0
+                }
+            resource_map[res_id]['total_quantity'] += float(item.quantity)
+            resource_map[res_id]['total_cost'] += float(item.quantity * item.unit_cost)
+            resource_map[res_id]['count'] += 1
+
+        resource_summary = sorted(resource_map.values(), key=lambda x: x['total_cost'], reverse=True)
+
+        serializer = ComplaintResourceSerializer(logs[:100], many=True)
+
+        return Response({
+            'period': period,
+            'total_cost': float(total_cost),
+            'total_items_logged': total_items,
+            'resource_summary': resource_summary,
+            'recent_logs': serializer.data
+        }, status=status.HTTP_200_OK)
+
 

@@ -94,7 +94,8 @@ class UserProfile(models.Model):
         DormitoryBuilding, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='residents',
     )
-    is_email_verified = models.BooleanField(default=False)
+    is_email_verified = models.BooleanField(default=True)
+    phone = models.CharField(max_length=32, blank=True, default='')
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
@@ -142,6 +143,9 @@ class Complaint(models.Model):
     finished_at = models.DateTimeField(null=True, blank=True)
     work_note = models.TextField(blank=True)
     rework_reason = models.TextField(blank=True)
+    is_rework = models.BooleanField(default=False)
+    rework_photo = models.ImageField(upload_to='complaint_rework_photos/', blank=True, null=True)
+    completion_photo = models.ImageField(upload_to='complaint_completion_photos/', blank=True, null=True)
     # Re-file chains: follow_up_of points at the complaint this one re-files,
     # root denormalizes the chain head at creation so lists and reports can
     # group a whole chain by it.
@@ -425,3 +429,42 @@ class Announcement(models.Model):
     class Meta:
         db_table = 'announcement'
         ordering = ['-created_at']
+
+
+class Resource(models.Model):
+    resource_id = models.AutoField(primary_key=True)
+    name = models.CharField(max_length=255)
+    unit = models.CharField(max_length=50, default='шт')
+    unit_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    description = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} ({self.unit_cost} ₴ / {self.unit})"
+
+    class Meta:
+        db_table = 'resource'
+        ordering = ['name']
+
+
+class ComplaintResource(models.Model):
+    id = models.AutoField(primary_key=True)
+    complaint = models.ForeignKey(Complaint, on_delete=models.CASCADE, related_name='used_resources')
+    resource = models.ForeignKey(Resource, on_delete=models.PROTECT, related_name='usage_logs')
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1.0)
+    unit_cost = models.DecimalField(max_digits=10, decimal_places=2)
+    notes = models.TextField(blank=True, default='')
+    logged_by = models.ForeignKey(UserProfile, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def total_cost(self):
+        return self.quantity * self.unit_cost
+
+    def __str__(self):
+        return f"{self.quantity} x {self.resource.name} for Complaint #{self.complaint_id}"
+
+    class Meta:
+        db_table = 'complaint_resource'
+        ordering = ['-created_at']
+
