@@ -46,6 +46,17 @@ the endpoint with `curl` (see Verification).
   `Notification`, `Announcement`, `InviteToken`, `EmailVerificationCode`,
   `PasswordResetCode`.
 
+## Resource authorization
+
+- Expenditure writes/deletes: staff globally, profile admins within their assigned
+  building (or their place building), workers on their current assignments.
+- Owners can read their own expenditure; workers can read historical assignments.
+  Reads return can_manage and can_manage_catalog; clients must honor both.
+- Catalog mutations require staff/admin. Expenditure reports are building-scoped
+  for profile admins; query filters may narrow but never expand that scope.
+- Resource quantities are positive decimals; costs are non-negative. Never infer
+  authorization from a client-supplied role or the presence of a UI control.
+
 ## API conventions
 
 - Class-based `APIView`s only — **no ViewSets** — with explicit

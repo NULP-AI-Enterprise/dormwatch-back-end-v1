@@ -1,3 +1,4 @@
+from decimal import Decimal
 from django.contrib.auth.models import User
 from django.conf import settings
 from rest_framework import serializers
@@ -68,12 +69,13 @@ class RoleSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    is_staff = serializers.BooleanField(source="user.is_staff", read_only=True)
     place = PlaceSerializer(read_only=True)
     building = DormitoryBuildingSerializer(read_only=True)
     role = RoleSerializer(read_only=True)
     class Meta:
         model = UserProfile
-        fields = ['user', 'first_name', 'last_name', 'email', 'place', 'building', 'photo_url', 'role', 'phone']
+        fields = ['user', 'first_name', 'last_name', 'email', 'place', 'building', 'photo_url', 'role', 'phone', 'is_staff']
 
 
 class UpdateUserSerializer(serializers.ModelSerializer):
@@ -551,6 +553,11 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 
 
 class ResourceSerializer(serializers.ModelSerializer):
+    unit_cost = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=0, required=False,
+        error_messages={"invalid": "Введіть коректну ціну.", "min_value": "Ціна не може бути від’ємною."},
+    )
+
     class Meta:
         model = Resource
         fields = ['resource_id', 'name', 'unit', 'unit_cost', 'description', 'created_at']
@@ -560,7 +567,7 @@ class ResourceSerializer(serializers.ModelSerializer):
 class ComplaintResourceSerializer(serializers.ModelSerializer):
     resource_details = ResourceSerializer(source='resource', read_only=True)
     logged_by_name = serializers.SerializerMethodField()
-    total_cost = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    total_cost = serializers.DecimalField(max_digits=20, decimal_places=2, read_only=True)
 
     class Meta:
         model = ComplaintResource
@@ -577,3 +584,26 @@ class ComplaintResourceSerializer(serializers.ModelSerializer):
         return "Система"
 
 
+
+
+class ComplaintResourceCreateSerializer(serializers.ModelSerializer):
+    resource_id = serializers.PrimaryKeyRelatedField(
+        source="resource", queryset=Resource.objects.all(),
+        error_messages={"does_not_exist": "Ресурс не знайдено.", "incorrect_type": "Оберіть ресурс із каталогу."},
+    )
+    quantity = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=Decimal("0.01"), default=1,
+        error_messages={"invalid": "Введіть коректну кількість.", "min_value": "Кількість має бути не меншою за 0,01."},
+    )
+    unit_cost = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=0, required=False,
+        error_messages={"invalid": "Введіть коректну ціну.", "min_value": "Ціна не може бути від’ємною."},
+    )
+
+    class Meta:
+        model = ComplaintResource
+        fields = ["resource_id", "quantity", "unit_cost", "notes"]
+
+    def create(self, validated_data):
+        validated_data.setdefault("unit_cost", validated_data["resource"].unit_cost)
+        return super().create(validated_data)

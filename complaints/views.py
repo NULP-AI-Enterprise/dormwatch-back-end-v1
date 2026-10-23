@@ -1,3 +1,9 @@
+from .resource_permissions import (
+    is_resource_admin, resource_admin_building,
+    can_manage_complaint_resources, can_read_complaint_resources,
+)
+from django.shortcuts import get_object_or_404
+from rest_framework.exceptions import PermissionDenied
 from datetime import timedelta
 import os
 
@@ -23,7 +29,7 @@ from .serializers import (
     UserSerializer, NotificationSerializer, CategorySerializer,
     DormitoryBuildingSerializer, PlaceSerializer, WorkerSerializer,
     AdminUpdateUserSerializer, RoleSerializer, AnnouncementSerializer,
-    ResourceSerializer, ComplaintResourceSerializer,
+    ResourceSerializer, ComplaintResourceSerializer, ComplaintResourceCreateSerializer,
 )
 from .image_utils import process_complaint_photo
 from .worker_report_util import finishing_worker
@@ -1899,10 +1905,8 @@ class ResourceListCreateView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        user_profile = getattr(request.user, 'profile', None)
-        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
-        if not is_admin:
-            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not is_resource_admin(request.user):
+            return Response({'detail': 'Недостатньо прав для зміни каталогу.'}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = ResourceSerializer(data=request.data)
         if serializer.is_valid():
@@ -1915,15 +1919,13 @@ class ResourceDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def patch(self, request, resource_id):
-        user_profile = getattr(request.user, 'profile', None)
-        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
-        if not is_admin:
-            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not is_resource_admin(request.user):
+            return Response({'detail': 'Недостатньо прав для зміни каталогу.'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             resource = Resource.objects.get(resource_id=resource_id)
         except Resource.DoesNotExist:
-            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'Ресурс не знайдено'}, status=status.HTTP_404_NOT_FOUND)
 
         serializer = ResourceSerializer(resource, data=request.data, partial=True)
         if serializer.is_valid():
@@ -1932,15 +1934,13 @@ class ResourceDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, resource_id):
-        user_profile = getattr(request.user, 'profile', None)
-        is_admin = user_profile and user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор', 'комендант']
-        if not is_admin:
-            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        if not is_resource_admin(request.user):
+            return Response({'detail': 'Недостатньо прав для зміни каталогу.'}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             resource = Resource.objects.get(resource_id=resource_id)
         except Resource.DoesNotExist:
-            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'Ресурс не знайдено'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
             resource.delete()
@@ -1952,79 +1952,51 @@ class ResourceDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _resource_complaint(complaint_id, *, lock=False):
+    qs = Complaint.objects.select_related("place__building", "worker", "user")
+    if lock:
+        qs = qs.select_for_update(of=("self",))
+    return get_object_or_404(qs, complaint_id=complaint_id)
+
+
 class ComplaintResourceView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, complaint_id):
-        try:
-            complaint = Complaint.objects.get(complaint_id=complaint_id)
-        except Complaint.DoesNotExist:
-            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        usage = ComplaintResource.objects.filter(complaint=complaint).select_related('resource', 'logged_by')
-        serializer = ComplaintResourceSerializer(usage, many=True)
-        
-        total_cost = sum(item.quantity * item.unit_cost for item in usage)
-
+        complaint = _resource_complaint(complaint_id)
+        if not can_read_complaint_resources(request.user, complaint):
+            raise PermissionDenied("Немає доступу до витрат цього звернення.")
+        usage = complaint.used_resources.select_related("resource", "logged_by")
         return Response({
-            'complaint_id': complaint_id,
-            'total_cost': total_cost,
-            'resources': serializer.data
-        }, status=status.HTTP_200_OK)
+            "complaint_id": complaint_id,
+            "total_cost": sum(item.quantity * item.unit_cost for item in usage),
+            "resources": ComplaintResourceSerializer(usage, many=True).data,
+            "can_manage": can_manage_complaint_resources(request.user, complaint),
+            "can_manage_catalog": is_resource_admin(request.user),
+        })
 
+    @transaction.atomic
     def post(self, request, complaint_id):
-        user_profile = getattr(request.user, 'profile', None)
-        if not user_profile:
-            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-
-        try:
-            complaint = Complaint.objects.get(complaint_id=complaint_id)
-        except Complaint.DoesNotExist:
-            return Response({'error': 'Complaint not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        resource_id = request.data.get('resource_id')
-        try:
-            resource = Resource.objects.get(resource_id=resource_id)
-        except Resource.DoesNotExist:
-            return Response({'error': 'Resource not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        quantity = request.data.get('quantity', 1.0)
-        try:
-            quantity = float(quantity)
-            if quantity <= 0:
-                raise ValueError()
-        except (ValueError, TypeError):
-            return Response({'error': 'Кількість повинна бути більшою за 0'}, status=status.HTTP_400_BAD_REQUEST)
-
-        unit_cost = request.data.get('unit_cost', resource.unit_cost)
-        notes = request.data.get('notes', '')
-
-        complaint_resource = ComplaintResource.objects.create(
-            complaint=complaint,
-            resource=resource,
-            quantity=quantity,
-            unit_cost=unit_cost,
-            notes=notes,
-            logged_by=user_profile
+        complaint = _resource_complaint(complaint_id, lock=True)
+        if not can_manage_complaint_resources(request.user, complaint):
+            raise PermissionDenied("Недостатньо прав для списання ресурсів на це звернення.")
+        serializer = ComplaintResourceCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        item = serializer.save(
+            complaint=complaint, logged_by=getattr(request.user, "profile", None),
         )
-
-        serializer = ComplaintResourceSerializer(complaint_resource)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(ComplaintResourceSerializer(item).data, status=status.HTTP_201_CREATED)
 
 
 class ComplaintResourceDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def delete(self, request, complaint_id, resource_log_id):
-        user_profile = getattr(request.user, 'profile', None)
-        if not user_profile:
-            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-
-        try:
-            log_item = ComplaintResource.objects.get(id=resource_log_id, complaint_id=complaint_id)
-        except ComplaintResource.DoesNotExist:
-            return Response({'error': 'Resource log not found'}, status=status.HTTP_404_NOT_FOUND)
-
+        complaint = _resource_complaint(complaint_id, lock=True)
+        if not can_manage_complaint_resources(request.user, complaint):
+            raise PermissionDenied("Недостатньо прав для видалення витрат цього звернення.")
+        log_item = get_object_or_404(ComplaintResource, id=resource_log_id, complaint=complaint)
         log_item.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -2036,6 +2008,10 @@ class ResourceExpenditureReportView(APIView):
         logs = ComplaintResource.objects.select_related(
             'complaint__place__building', 'resource', 'complaint__category', 'logged_by'
         )
+
+        if not request.user.is_staff:
+            building = resource_admin_building(request.user)
+            logs = logs.filter(complaint__place__building_id=building) if building else logs.none()
 
         building_id = request.query_params.get('building_id')
         category_id = request.query_params.get('category_id')
