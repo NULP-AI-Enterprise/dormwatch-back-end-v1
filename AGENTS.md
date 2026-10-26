@@ -15,8 +15,8 @@ conventions live in the root `CLAUDE.md`.
 - `.venv/bin/python manage.py shell` — REPL (testing only, see Verification)
 - `.venv/bin/python manage.py check` — config sanity check
 
-There is **no test suite**. Verification is end-to-end: mint a JWT and drive
-the endpoint with `curl` (see Verification).
+Comment ownership has regression tests in complaints/tests.py. Also verify
+end-to-end with a minted JWT against the live API (see Verification).
 
 ## Auth
 
@@ -45,6 +45,12 @@ the endpoint with `curl` (see Verification).
   `ComplaintCategory`, `Complaint`, `Worker`, `Ticket`, `Comment`,
   `Notification`, `Announcement`, `InviteToken`, `EmailVerificationCode`,
   `PasswordResetCode`.
+
+## Comment ownership
+
+Only a comment's author may delete it. Admin roles, staff, and superusers do
+not bypass authorship. Apply this to both the API and Django admin; disable
+bulk comment deletion. Verify all roles with manage.py test complaints.tests.
 
 ## Resource authorization
 

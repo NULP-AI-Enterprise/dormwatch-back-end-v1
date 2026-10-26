@@ -1376,9 +1376,9 @@ class CommentDeleteView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        is_admin = user_profile.role and user_profile.role.role_name.lower() in ['admin', 'адміністратор']
-        if comment.user != user_profile and not is_admin:
-            return Response({'error': 'Permission denied'},status=status.HTTP_403_FORBIDDEN)
+        # Comment authors retain control of their own words, regardless of role.
+        if comment.user_id != user_profile.pk:
+            return Response({'error': 'Можна видаляти лише власні коментарі.'}, status=status.HTTP_403_FORBIDDEN)
 
         comment.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

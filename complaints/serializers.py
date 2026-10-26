@@ -555,7 +555,13 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 class ResourceSerializer(serializers.ModelSerializer):
     unit_cost = serializers.DecimalField(
         max_digits=10, decimal_places=2, min_value=0, required=False,
-        error_messages={"invalid": "Введіть коректну ціну.", "min_value": "Ціна не може бути від’ємною."},
+        error_messages={
+            "invalid": "Введіть коректну ціну.",
+            "min_value": "Ціна не може бути від’ємною.",
+            "max_digits": "Ціна не може перевищувати 99 999 999,99 ₴ і мати більше 2 знаків після коми.",
+            "max_whole_digits": "Ціна не може перевищувати 99 999 999,99 ₴.",
+            "max_decimal_places": "Ціна може мати не більше 2 знаків після коми.",
+        },
     )
 
     class Meta:
@@ -593,11 +599,23 @@ class ComplaintResourceCreateSerializer(serializers.ModelSerializer):
     )
     quantity = serializers.DecimalField(
         max_digits=10, decimal_places=2, min_value=Decimal("0.01"), default=1,
-        error_messages={"invalid": "Введіть коректну кількість.", "min_value": "Кількість має бути не меншою за 0,01."},
+        error_messages={
+            "invalid": "Введіть коректну кількість.",
+            "min_value": "Кількість має бути не меншою за 0,01.",
+            "max_digits": "Кількість не може перевищувати 99 999 999,99 і мати більше 2 знаків після коми.",
+            "max_whole_digits": "Кількість не може перевищувати 99 999 999,99.",
+            "max_decimal_places": "Кількість може мати не більше 2 знаків після коми.",
+        },
     )
     unit_cost = serializers.DecimalField(
         max_digits=10, decimal_places=2, min_value=0, required=False,
-        error_messages={"invalid": "Введіть коректну ціну.", "min_value": "Ціна не може бути від’ємною."},
+        error_messages={
+            "invalid": "Введіть коректну ціну.",
+            "min_value": "Ціна не може бути від’ємною.",
+            "max_digits": "Ціна не може перевищувати 99 999 999,99 ₴ і мати більше 2 знаків після коми.",
+            "max_whole_digits": "Ціна не може перевищувати 99 999 999,99 ₴.",
+            "max_decimal_places": "Ціна може мати не більше 2 знаків після коми.",
+        },
     )
 
     class Meta:
